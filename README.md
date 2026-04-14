@@ -1,4 +1,4 @@
-# GitLab Gantt & Roadmap
+# GLance
 
 A single-file web application for visualizing GitLab milestones and issues as interactive Gantt charts, roadmaps, and Kanban boards. Connect to any GitLab instance (including self-hosted) with a personal access token.
 
