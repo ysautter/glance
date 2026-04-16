@@ -66,7 +66,7 @@ The app recognizes labels matching these patterns and displays them as compact b
 
 ## Shared Server (Read-Only)
 
-To share a dashboard with your team, run the included proxy server. It keeps your GitLab token server-side, stores boards on the server, and authenticates users against an OpenLDAP server.
+To share a dashboard with your team, run the included proxy server. It keeps your GitLab token server-side, stores boards on the server, and supports LDAP or OIDC authentication.
 
 **Requirements:** Node.js 18+
 
@@ -78,20 +78,43 @@ npm start
 
 Configuration is read from a `.env` file (or environment variables). See `.env.example` for all options.
 
+### Common configuration
+
 | Variable | Description |
 |----------|-------------|
 | `GITLAB_URL` | GitLab instance URL |
 | `GITLAB_TOKEN` | Personal access token (`api` scope for full functionality) |
 | `SOURCE_TYPE` | `project` or `group` |
 | `SOURCE_PATH` | Project/group path (e.g. `namespace/project`) |
+| `AUTH_METHOD` | `ldap` or `oidc` (default: `ldap`) |
+| `ADMIN_USERS` | Comma-separated usernames that get admin role |
+| `PORT` | Listen port (default: `3000`) |
+
+### LDAP configuration (`AUTH_METHOD=ldap`)
+
+Users authenticate via the browser's Basic Auth dialog. The server binds to LDAP with their credentials. Successful binds are cached for 5 minutes.
+
+| Variable | Description |
+|----------|-------------|
 | `LDAP_URL` | LDAP server URL (e.g. `ldap://ldap.example.com:389`) |
 | `LDAP_BIND_DN` | DN template with `{{username}}` placeholder (e.g. `uid={{username}},ou=people,dc=example,dc=com`) |
-| `LDAP_ADMIN_USERS` | Comma-separated usernames that get admin role |
-| `PORT` | Listen port (default: `3000`) |
+
+### OIDC configuration (`AUTH_METHOD=oidc`)
+
+Users are redirected to the OIDC provider's login page. After authentication, a session cookie is set (8 hours). The server uses OIDC discovery (`.well-known/openid-configuration`).
+
+| Variable | Description |
+|----------|-------------|
+| `OIDC_ISSUER_URL` | Issuer URL (e.g. `https://auth.example.com/realms/myrealm`) |
+| `OIDC_CLIENT_ID` | Client ID registered with the provider |
+| `OIDC_CLIENT_SECRET` | Client secret |
+| `OIDC_REDIRECT_URI` | Callback URL — must be `http(s)://<your-host>/auth/callback` |
+| `OIDC_USERNAME_CLAIM` | ID token claim used as username (default: `preferred_username`) |
+| `SESSION_SECRET` | Secret for signing session cookies (auto-generated if omitted, but sessions won't survive restarts) |
 
 ### Roles
 
-Users are authenticated via LDAP bind. Usernames listed in `LDAP_ADMIN_USERS` get the admin role; all others are viewers.
+Usernames in `ADMIN_USERS` get the admin role. All other authenticated users are viewers.
 
 | | Admin | Viewer |
 |---|---|---|
@@ -101,8 +124,6 @@ Users are authenticated via LDAP bind. Usernames listed in `LDAP_ADMIN_USERS` ge
 | Move issues between columns (GitLab label sync) | Yes | No |
 | Edit issues (dates, labels, assignees, milestone) | Yes | No |
 | Filter columns by label | Yes | Yes |
-
-Successful LDAP authentications are cached for 5 minutes to reduce load on the LDAP server.
 
 Boards are stored server-side in `boards.json`. The file is created automatically on first save.
 
@@ -123,4 +144,4 @@ For production, put it behind a reverse proxy (nginx/Caddy) with HTTPS.
 
 ## Tech
 
-Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend required for personal use. Fonts loaded from Google Fonts (Outfit + JetBrains Mono). The `server.js` proxy uses `ldapts` for LDAP authentication and reads config from `.env`.
+Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend required for personal use. Fonts loaded from Google Fonts (Outfit + JetBrains Mono). The `server.js` proxy supports LDAP (`ldapts`) and OIDC (authorization code flow) authentication, and reads config from `.env`.

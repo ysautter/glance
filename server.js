@@ -3,7 +3,6 @@ const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { Client: LdapClient } = require('ldapts');
 
 // ── .env loader ──────────────────────────────────────────────
 function loadEnv(filePath) {
@@ -16,7 +15,6 @@ function loadEnv(filePath) {
       if (eqIdx === -1) continue;
       const key = trimmed.slice(0, eqIdx).trim();
       let val = trimmed.slice(eqIdx + 1).trim();
-      // Strip surrounding quotes
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1);
       }
@@ -31,18 +29,44 @@ const GITLAB_URL = (process.env.GITLAB_URL || '').replace(/\/$/, '');
 const GITLAB_TOKEN = process.env.GITLAB_TOKEN || '';
 const SOURCE_TYPE = process.env.SOURCE_TYPE || 'project';
 const SOURCE_PATH = process.env.SOURCE_PATH || '';
-const LDAP_URL = process.env.LDAP_URL || '';
-const LDAP_BIND_DN = process.env.LDAP_BIND_DN || '';
-const LDAP_ADMIN_USERS = (process.env.LDAP_ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const AUTH_METHOD = (process.env.AUTH_METHOD || 'ldap').toLowerCase();
+const ADMIN_USERS = (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const BOARDS_FILE = path.join(__dirname, 'boards.json');
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
-for (const [k, v] of [['GITLAB_URL', GITLAB_URL], ['GITLAB_TOKEN', GITLAB_TOKEN], ['SOURCE_PATH', SOURCE_PATH], ['LDAP_URL', LDAP_URL], ['LDAP_BIND_DN', LDAP_BIND_DN]]) {
+// LDAP config
+const LDAP_URL = process.env.LDAP_URL || '';
+const LDAP_BIND_DN = process.env.LDAP_BIND_DN || '';
+
+// OIDC config
+const OIDC_ISSUER_URL = (process.env.OIDC_ISSUER_URL || '').replace(/\/$/, '');
+const OIDC_CLIENT_ID = process.env.OIDC_CLIENT_ID || '';
+const OIDC_CLIENT_SECRET = process.env.OIDC_CLIENT_SECRET || '';
+const OIDC_REDIRECT_URI = process.env.OIDC_REDIRECT_URI || '';
+const OIDC_USERNAME_CLAIM = process.env.OIDC_USERNAME_CLAIM || 'preferred_username';
+
+// Validate common config
+for (const [k, v] of [['GITLAB_URL', GITLAB_URL], ['GITLAB_TOKEN', GITLAB_TOKEN], ['SOURCE_PATH', SOURCE_PATH]]) {
   if (!v) { console.error(`Missing required env var: ${k}`); process.exit(1); }
 }
 
-if (!LDAP_BIND_DN.includes('{{username}}')) {
-  console.error('LDAP_BIND_DN must contain {{username}} placeholder'); process.exit(1);
+if (AUTH_METHOD !== 'ldap' && AUTH_METHOD !== 'oidc') {
+  console.error('AUTH_METHOD must be "ldap" or "oidc"'); process.exit(1);
+}
+
+// Validate auth-specific config
+if (AUTH_METHOD === 'ldap') {
+  if (!LDAP_URL) { console.error('Missing required env var: LDAP_URL'); process.exit(1); }
+  if (!LDAP_BIND_DN) { console.error('Missing required env var: LDAP_BIND_DN'); process.exit(1); }
+  if (!LDAP_BIND_DN.includes('{{username}}')) {
+    console.error('LDAP_BIND_DN must contain {{username}} placeholder'); process.exit(1);
+  }
+}
+if (AUTH_METHOD === 'oidc') {
+  for (const [k, v] of [['OIDC_ISSUER_URL', OIDC_ISSUER_URL], ['OIDC_CLIENT_ID', OIDC_CLIENT_ID], ['OIDC_CLIENT_SECRET', OIDC_CLIENT_SECRET], ['OIDC_REDIRECT_URI', OIDC_REDIRECT_URI]]) {
+    if (!v) { console.error(`Missing required env var: ${k}`); process.exit(1); }
+  }
 }
 
 // ── Boards persistence ──────────────────────────────────────
@@ -56,19 +80,58 @@ function saveBoards(boards) {
 
 // ── Prepare index.html with served-mode config ──────────────
 const rawHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf-8');
-function buildHtml(role) {
+function buildHtml(role, username) {
   const inject = `<style>#setup{display:none!important}</style>` +
     `<script>window.__GLANCE_SERVED=true;window.__GLANCE_ROLE=${JSON.stringify(role)};` +
+    `window.__GLANCE_USER=${JSON.stringify(username || '')};` +
     `window.__GLANCE_CONFIG=${JSON.stringify({ type: SOURCE_TYPE, path: SOURCE_PATH })};</script>`;
   return rawHtml.replace('<script>', inject + '<script>');
 }
 
+// ── Body / cookie helpers ───────────────────────────────────
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function parseCookies(req) {
+  const obj = {};
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k) obj[k] = decodeURIComponent(v.join('='));
+  }
+  return obj;
+}
+
+function signSession(data) {
+  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+function verifySession(token) {
+  const [payload, sig] = (token || '').split('.');
+  if (!payload || !sig) return null;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try { return JSON.parse(Buffer.from(payload, 'base64url').toString()); }
+  catch { return null; }
+}
+
+function roleFor(username) {
+  return ADMIN_USERS.includes(username) ? 'admin' : 'viewer';
+}
+
 // ── LDAP Auth ───────────────────────────────────────────────
-// Cache successful LDAP binds for 5 minutes to avoid binding on every request
 const AUTH_CACHE = new Map();
 const AUTH_CACHE_TTL = 5 * 60 * 1000;
 
 async function ldapBind(username, password) {
+  const { Client: LdapClient } = require('ldapts');
   const dn = LDAP_BIND_DN.replace('{{username}}', username);
   const client = new LdapClient({ url: LDAP_URL, connectTimeout: 5000 });
   try {
@@ -79,7 +142,7 @@ async function ldapBind(username, password) {
   }
 }
 
-async function authenticate(req) {
+async function ldapAuthenticate(req) {
   const header = req.headers['authorization'] || '';
   if (!header.startsWith('Basic ')) return null;
   const decoded = Buffer.from(header.slice(6), 'base64').toString();
@@ -89,39 +152,157 @@ async function authenticate(req) {
   const pass = decoded.slice(idx + 1);
   if (!user || !pass) return null;
 
-  // Check cache
   const cacheKey = crypto.createHash('sha256').update(user + ':' + pass).digest('hex');
   const cached = AUTH_CACHE.get(cacheKey);
-  if (cached && Date.now() - cached.time < AUTH_CACHE_TTL) return cached.role;
+  if (cached && Date.now() - cached.time < AUTH_CACHE_TTL) return { role: cached.role, username: user };
 
-  // LDAP bind
-  try {
-    await ldapBind(user, pass);
-  } catch {
-    return null;
-  }
+  try { await ldapBind(user, pass); }
+  catch { return null; }
 
-  const role = LDAP_ADMIN_USERS.includes(user) ? 'admin' : 'viewer';
+  const role = roleFor(user);
   AUTH_CACHE.set(cacheKey, { role, time: Date.now() });
-  return role;
+  return { role, username: user };
 }
 
-async function requireAuth(req, res) {
-  const role = await authenticate(req);
-  if (role) return role;
+async function ldapRequireAuth(req, res) {
+  const auth = await ldapAuthenticate(req);
+  if (auth) return auth;
   res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="GLance"', 'Content-Type': 'text/plain' });
   res.end('Unauthorized');
   return null;
 }
 
-// ── Body helper ─────────────────────────────────────────────
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
+// ── OIDC Auth ───────────────────────────────────────────────
+let _oidcConfig = null;
+async function oidcDiscovery() {
+  if (_oidcConfig) return _oidcConfig;
+  const r = await fetch(`${OIDC_ISSUER_URL}/.well-known/openid-configuration`);
+  if (!r.ok) throw new Error(`OIDC discovery failed: ${r.status}`);
+  _oidcConfig = await r.json();
+  return _oidcConfig;
+}
+
+// OIDC state store (short-lived, for CSRF protection)
+const _oidcStates = new Map();
+
+function oidcGetSession(req) {
+  const cookies = parseCookies(req);
+  return verifySession(cookies.glance_session);
+}
+
+async function oidcHandleAuth(req, res, url) {
+  const p = url.pathname;
+
+  // Callback from OIDC provider
+  if (p === '/auth/callback' && req.method === 'GET') {
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const error = url.searchParams.get('error');
+
+    if (error) {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end(`Authentication error: ${error} - ${url.searchParams.get('error_description') || ''}`);
+      return true;
+    }
+
+    if (!code || !state || !_oidcStates.has(state)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid callback (missing code or state)');
+      return true;
+    }
+    _oidcStates.delete(state);
+
+    try {
+      const disc = await oidcDiscovery();
+      // Exchange code for tokens
+      const tokenRes = await fetch(disc.token_endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: OIDC_REDIRECT_URI,
+          client_id: OIDC_CLIENT_ID,
+          client_secret: OIDC_CLIENT_SECRET,
+        }),
+      });
+      if (!tokenRes.ok) {
+        const t = await tokenRes.text();
+        throw new Error(`Token exchange failed: ${tokenRes.status} ${t.slice(0, 200)}`);
+      }
+      const tokens = await tokenRes.json();
+
+      // Decode ID token payload (we trust the provider since we just exchanged the code over TLS)
+      const idPayload = JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64url').toString());
+      const username = idPayload[OIDC_USERNAME_CLAIM] || idPayload.sub;
+      const role = roleFor(username);
+
+      const sessionToken = signSession({ user: username, role, exp: Date.now() + 8 * 60 * 60 * 1000 });
+      res.writeHead(302, {
+        'Location': '/',
+        'Set-Cookie': `glance_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800`,
+      });
+      res.end();
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Authentication failed: ' + e.message);
+    }
+    return true;
+  }
+
+  // Logout
+  if (p === '/auth/logout' && req.method === 'GET') {
+    const disc = await oidcDiscovery();
+    let location = '/';
+    if (disc.end_session_endpoint) {
+      const logoutUrl = new URL(disc.end_session_endpoint);
+      logoutUrl.searchParams.set('client_id', OIDC_CLIENT_ID);
+      logoutUrl.searchParams.set('post_logout_redirect_uri', OIDC_REDIRECT_URI.replace('/auth/callback', '/'));
+      location = logoutUrl.toString();
+    }
+    res.writeHead(302, {
+      'Location': location,
+      'Set-Cookie': 'glance_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    });
+    res.end();
+    return true;
+  }
+
+  return false;
+}
+
+async function oidcRequireAuth(req, res) {
+  const session = oidcGetSession(req);
+  if (session && session.exp > Date.now()) return { role: session.role, username: session.user };
+
+  // Redirect to OIDC provider
+  const disc = await oidcDiscovery();
+  const state = crypto.randomBytes(16).toString('hex');
+  _oidcStates.set(state, Date.now());
+  // Clean up old states (> 10 min)
+  for (const [k, t] of _oidcStates) { if (Date.now() - t > 600000) _oidcStates.delete(k); }
+
+  const authUrl = new URL(disc.authorization_endpoint);
+  authUrl.searchParams.set('client_id', OIDC_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', OIDC_REDIRECT_URI);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'openid profile');
+  authUrl.searchParams.set('state', state);
+
+  res.writeHead(302, { 'Location': authUrl.toString() });
+  res.end();
+  return null;
+}
+
+// ── Unified auth interface ──────────────────────────────────
+async function requireAuth(req, res, url) {
+  if (AUTH_METHOD === 'oidc') {
+    // Handle OIDC routes first
+    const handled = await oidcHandleAuth(req, res, url);
+    if (handled) return '__handled__';
+    return oidcRequireAuth(req, res);
+  }
+  return ldapRequireAuth(req, res);
 }
 
 // ── GitLab proxy ────────────────────────────────────────────
@@ -168,16 +349,28 @@ function proxy(req, res, targetPath, method) {
 
 // ── Server ──────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  const role = await requireAuth(req, res);
-  if (!role) return;
-
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
 
-  // Serve index (inject role into config)
+  // LDAP logout: respond with 401 to clear cached Basic Auth credentials
+  if (p === '/auth/logout' && req.method === 'GET' && AUTH_METHOD === 'ldap') {
+    res.writeHead(401, {
+      'WWW-Authenticate': 'Basic realm="GLance"',
+      'Content-Type': 'text/html',
+    });
+    res.end('<html><body><p>Logged out.</p><p><a href="/">Log in again</a></p></body></html>');
+    return;
+  }
+
+  const auth = await requireAuth(req, res, url);
+  if (!auth) return;
+  if (auth === '__handled__') return;
+  const { role, username } = auth;
+
+  // Serve index
   if (p === '/' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(buildHtml(role));
+    res.end(buildHtml(role, username));
     return;
   }
 
@@ -237,11 +430,23 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, () => {
-  console.log(`GLance server running on http://localhost:${PORT}`);
-  console.log(`  GitLab:  ${GITLAB_URL}`);
-  console.log(`  Source:  ${SOURCE_TYPE} → ${SOURCE_PATH}`);
-  console.log(`  LDAP:    ${LDAP_URL}`);
-  console.log(`  Admins:  ${LDAP_ADMIN_USERS.join(', ') || '(none)'}`);
-  console.log(`  Boards:  ${BOARDS_FILE}`);
-});
+// ── Startup ─────────────────────────────────────────────────
+(async () => {
+  if (AUTH_METHOD === 'oidc') {
+    try {
+      const disc = await oidcDiscovery();
+      console.log(`  OIDC discovered: ${disc.issuer}`);
+    } catch (e) {
+      console.error(`Failed OIDC discovery: ${e.message}`); process.exit(1);
+    }
+  }
+
+  server.listen(PORT, () => {
+    console.log(`GLance server running on http://localhost:${PORT}`);
+    console.log(`  GitLab:  ${GITLAB_URL}`);
+    console.log(`  Source:  ${SOURCE_TYPE} → ${SOURCE_PATH}`);
+    console.log(`  Auth:    ${AUTH_METHOD.toUpperCase()}${AUTH_METHOD === 'ldap' ? ' → ' + LDAP_URL : ''}`);
+    console.log(`  Admins:  ${ADMIN_USERS.join(', ') || '(none)'}`);
+    console.log(`  Boards:  ${BOARDS_FILE}`);
+  });
+})();
