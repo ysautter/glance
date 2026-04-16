@@ -66,22 +66,17 @@ The app recognizes labels matching these patterns and displays them as compact b
 
 ## Shared Server (Read-Only)
 
-To share a dashboard with your team, run the included proxy server. It keeps your GitLab token server-side, stores boards on the server, and supports two roles via basic auth.
+To share a dashboard with your team, run the included proxy server. It keeps your GitLab token server-side, stores boards on the server, and authenticates users against an OpenLDAP server.
 
-**Requirements:** Node.js 18+, no npm dependencies.
+**Requirements:** Node.js 18+
 
 ```bash
-GITLAB_URL=https://gitlab.com \
-GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
-SOURCE_TYPE=group \
-SOURCE_PATH=my-org/my-group \
-ADMIN_USER=admin \
-ADMIN_PASS=admin-secret \
-AUTH_USER=team \
-AUTH_PASS=team-secret \
-PORT=3000 \
-node server.js
+npm install
+cp .env.example .env   # edit with your values
+npm start
 ```
+
+Configuration is read from a `.env` file (or environment variables). See `.env.example` for all options.
 
 | Variable | Description |
 |----------|-------------|
@@ -89,13 +84,14 @@ node server.js
 | `GITLAB_TOKEN` | Personal access token (`api` scope for full functionality) |
 | `SOURCE_TYPE` | `project` or `group` |
 | `SOURCE_PATH` | Project/group path (e.g. `namespace/project`) |
-| `ADMIN_USER` | Admin username (can create/edit/delete boards, move issues) |
-| `ADMIN_PASS` | Admin password |
-| `AUTH_USER` | Viewer username (read-only access) |
-| `AUTH_PASS` | Viewer password |
+| `LDAP_URL` | LDAP server URL (e.g. `ldap://ldap.example.com:389`) |
+| `LDAP_BIND_DN` | DN template with `{{username}}` placeholder (e.g. `uid={{username}},ou=people,dc=example,dc=com`) |
+| `LDAP_ADMIN_USERS` | Comma-separated usernames that get admin role |
 | `PORT` | Listen port (default: `3000`) |
 
 ### Roles
+
+Users are authenticated via LDAP bind. Usernames listed in `LDAP_ADMIN_USERS` get the admin role; all others are viewers.
 
 | | Admin | Viewer |
 |---|---|---|
@@ -103,7 +99,10 @@ node server.js
 | Create / delete boards | Yes | No |
 | Reorder columns and cards | Yes | No |
 | Move issues between columns (GitLab label sync) | Yes | No |
+| Edit issues (dates, labels, assignees, milestone) | Yes | No |
 | Filter columns by label | Yes | Yes |
+
+Successful LDAP authentications are cached for 5 minutes to reduce load on the LDAP server.
 
 Boards are stored server-side in `boards.json`. The file is created automatically on first save.
 
@@ -124,4 +123,4 @@ For production, put it behind a reverse proxy (nginx/Caddy) with HTTPS.
 
 ## Tech
 
-Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend required for personal use. Fonts loaded from Google Fonts (Outfit + JetBrains Mono). The optional `server.js` is a zero-dependency Node.js proxy for shared team access.
+Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend required for personal use. Fonts loaded from Google Fonts (Outfit + JetBrains Mono). The `server.js` proxy uses `ldapts` for LDAP authentication and reads config from `.env`.

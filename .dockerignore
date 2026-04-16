@@ -1,0 +1,9 @@
+node_modules
+.env
+boards.json
+.git
+.gitignore
+.claudeignore
+.dockerignore
+README.md
+.env.example

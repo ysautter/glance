@@ -1,0 +1,10 @@
+services:
+  glance:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./boards.json:/app/boards.json
+    restart: unless-stopped

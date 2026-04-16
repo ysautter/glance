@@ -1,0 +1,11 @@
+{
+  "name": "glance",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ldapts": "^7.2.1"
+  }
+}
