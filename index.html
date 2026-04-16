@@ -90,8 +90,12 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
 .trow.ms-row{height:42px;background:rgba(255,255,255,.015);}
 .trow.iss-row{height:40px;}
 .today-line{position:absolute;top:0;bottom:0;width:2px;background:var(--today);opacity:.7;z-index:4;pointer-events:none;}
-.bar{position:absolute;top:50%;transform:translateY(-50%);border-radius:4px;display:flex;align-items:center;padding:0 7px;white-space:nowrap;overflow:hidden;cursor:pointer;transition:filter .15s;z-index:2;}
+.bar{position:absolute;top:50%;transform:translateY(-50%);border-radius:4px;display:flex;align-items:center;padding:0 7px;white-space:nowrap;overflow:hidden;cursor:grab;transition:filter .15s;z-index:2;}
 .bar:hover{filter:brightness(1.18);}
+.bar-handle{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:3;}
+.bar-handle-l{left:0;}.bar-handle-r{right:0;}
+.bar-handle:hover,.bar-handle:active{background:rgba(255,255,255,.15);}
+.bar.dragging-bar{opacity:.7;cursor:grabbing;}
 .bar.ms-bar{height:24px;padding:0;}
 .ms-bar-fill{position:absolute;top:0;left:0;bottom:0;border-radius:4px;}
 .ms-bar-text{position:relative;z-index:1;padding:0 8px;font-size:10px;font-weight:500;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -323,6 +327,49 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
 <!-- Tooltip -->
 <div id="tip"></div>
 
+<!-- Issue Edit Modal -->
+<div class="modal-overlay" id="iss-modal-overlay" style="display:none;" onclick="if(event.target===this)closeIssModal()">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-head">
+      <h3 id="iss-modal-title">Edit Issue</h3>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <a id="iss-modal-link" href="#" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none;">Open in GitLab ↗</a>
+        <button class="modal-close" onclick="closeIssModal()">×</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>Start date <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stored as GanttStart in description)</span></label>
+        <input type="date" id="iss-start-date">
+      </div>
+      <div class="modal-field">
+        <label>Due date</label>
+        <input type="date" id="iss-due-date">
+      </div>
+      <div class="modal-field">
+        <label>Milestone</label>
+        <select id="iss-milestone" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          <option value="">None</option>
+        </select>
+      </div>
+      <div class="modal-field">
+        <label>Assignees</label>
+        <input type="text" id="iss-member-search" placeholder="Search members…" oninput="filterIssMemberPicker()">
+        <div class="lbl-pick-list" id="iss-member-pick-list" style="max-height:160px;"></div>
+      </div>
+      <div class="modal-field">
+        <label>Labels</label>
+        <input type="text" id="iss-lbl-search" placeholder="Search labels…" oninput="filterIssLabelPicker()">
+        <div class="lbl-pick-list" id="iss-lbl-pick-list" style="max-height:200px;"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-cancel" onclick="closeIssModal()">Cancel</button>
+      <button class="btn-create" id="iss-save-btn" onclick="saveIssueEdits()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- New Board Modal -->
 <div class="modal-overlay" id="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -416,7 +463,7 @@ async function fetchChildLinks(issues){
     try{
       const gid='gid://gitlab/WorkItem/'+task.id;
       const q=`{workItem(id:${JSON.stringify(gid)}){widgets{...on WorkItemWidgetHierarchy{parent{iid}}}}}`;
-      const r=await fetch(S.baseUrl+'/api/graphql',{method:'POST',headers:{'Authorization':'Bearer '+S.token,'Content-Type':'application/json'},body:JSON.stringify({query:q})});
+      const r=await fetch(_apiUrl('/api/graphql'),{method:'POST',headers:_apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify({query:q})});
       const d=await r.json();
       const wi=d?.data?.workItem;
       if(wi){const hw=(wi.widgets||[]).find(w=>w?.parent);if(hw?.parent?.iid){task._detectedParentIid=parseInt(hw.parent.iid);return;}}
@@ -474,16 +521,21 @@ function hideErr(){document.getElementById('err-msg').style.display='none';}
 function showLoader(id,m){document.getElementById(id).innerHTML=`<div class="loader"><div class="spinner"></div><span>${esc(m)}</span></div>`;}
 
 // ── API ────────────────────────────────────────────────────
+const _served=!!window.__GLANCE_SERVED;
+const _role=window.__GLANCE_ROLE||'admin';
+const _isAdmin=_role==='admin';
+function _apiUrl(path){return _served?path:S.baseUrl+path;}
+function _apiHeaders(extra={}){const h={...extra};if(!_served)h['Authorization']=`Bearer ${S.token}`;return h;}
 async function glFetch(path,params={}){
-  const u=new URL(`${S.baseUrl}/api/v4${path}`);
+  const u=new URL(_apiUrl(`/api/v4${path}`),location.origin);
   Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,v));
-  const r=await fetch(u,{headers:{'Authorization':`Bearer ${S.token}`}});
+  const r=await fetch(u,{headers:_apiHeaders()});
   if(!r.ok){const t=await r.text();throw new Error(`${r.status}: ${t.slice(0,120)}`);}
   return r.json();
 }
 async function glPut(path,body={}){
-  const u=new URL(`${S.baseUrl}/api/v4${path}`);
-  const r=await fetch(u,{method:'PUT',headers:{'Authorization':`Bearer ${S.token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const u=new URL(_apiUrl(`/api/v4${path}`),location.origin);
+  const r=await fetch(u,{method:'PUT',headers:_apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
   if(!r.ok){const t=await r.text();throw new Error(`${r.status}: ${t.slice(0,120)}`);}
   return r.json();
 }
@@ -497,13 +549,19 @@ function apiBase(){return S.type==='project'?`/projects/${encodeURIComponent(S.p
 // ── Connect ────────────────────────────────────────────────
 async function connect(){
   hideErr();
-  const btn=document.getElementById('conn-btn');
-  btn.disabled=true;btn.textContent='Connecting…';
-  S.baseUrl=document.getElementById('gl-url').value.replace(/\/$/,'');
-  S.token=document.getElementById('gl-token').value.trim();
-  S.type=document.getElementById('source-type').value;
-  S.path=document.getElementById('gl-path').value.trim();
-  if(!S.token||!S.path){showErr('Please fill in all fields.');btn.disabled=false;btn.textContent='Connect to GitLab';return;}
+  if(_served){
+    S.type=window.__GLANCE_CONFIG.type;
+    S.path=window.__GLANCE_CONFIG.path;
+    S.baseUrl='';S.token='';
+  }else{
+    const btn=document.getElementById('conn-btn');
+    btn.disabled=true;btn.textContent='Connecting…';
+    S.baseUrl=document.getElementById('gl-url').value.replace(/\/$/,'');
+    S.token=document.getElementById('gl-token').value.trim();
+    S.type=document.getElementById('source-type').value;
+    S.path=document.getElementById('gl-path').value.trim();
+    if(!S.token||!S.path){showErr('Please fill in all fields.');btn.disabled=false;btn.textContent='Connect to GitLab';return;}
+  }
   try{
     document.getElementById('setup').style.display='none';
     document.getElementById('app').style.display='flex';
@@ -518,26 +576,31 @@ async function connect(){
     if(!mss.length){showLoader('gantt-view','No milestones found. Create milestones with start/due dates in GitLab first.');return;}
     showLoader('gantt-view',`Loading issues for ${mss.length} milestones…`);
     await loadData(mss);
-    loadBoardsFromStorage();
+    await loadBoardsFromStorage();
     renderBoardsList();
   }catch(e){
-    document.getElementById('setup').style.display='flex';
-    document.getElementById('app').style.display='none';
+    if(!_served){
+      document.getElementById('setup').style.display='flex';
+      document.getElementById('app').style.display='none';
+      const btn=document.getElementById('conn-btn');
+      btn.disabled=false;btn.textContent='Connect to GitLab';
+    }
     showErr(`Connection failed: ${e.message}`);
-    btn.disabled=false;btn.textContent='Connect to GitLab';
   }
 }
 
 async function loadData(rawMss){
   const enriched=await Promise.all(rawMss.map(async(ms,i)=>{
     const issues=S.allIssues.filter(iss=>iss.milestone&&iss.milestone.id===ms.id);
-    const enrichedIssues=issues.map(iss=>{
+    // Enrich in-place so ms.issues and S.allIssues share the same objects
+    issues.forEach(iss=>{
       const ownStart=ganttStart(iss.description);
       const ownEnd=ganttDue(iss.description)||parseD(iss.due_date);
-      const gs=ownStart||parseD(ms.start_date)||parseD(iss.created_at);
-      const ge=ownEnd||parseD(ms.due_date);
-      return{...iss,gStart:gs,gEnd:ge,_hasOwnDates:!!(ownStart||ownEnd)};
+      iss.gStart=ownStart||parseD(ms.start_date)||parseD(iss.created_at);
+      iss.gEnd=ownEnd||parseD(ms.due_date);
+      iss._hasOwnDates=!!(ownStart||ownEnd);
     });
+    const enrichedIssues=issues;
     return{...ms,color:COLORS[i%COLORS.length],issues:enrichedIssues};
   }));
   // Fetch parent-child hierarchy via GraphQL/links
@@ -647,9 +710,165 @@ function renderGantt(){
   buildHeader(lo,hi,totalDays,pxDay);
   buildRows(mss,lo,totalDays,pxDay,totalW);
   buildLegend(mss);
+  if(_isAdmin)attachBarDrag(lo,totalDays,pxDay);
   const todayOff=diffD(lo,new Date());
   const tl=document.getElementById('g-timeline');
   setTimeout(()=>{if(tl)tl.scrollLeft=Math.max(0,todayOff*pxDay-tl.clientWidth/2);},80);
+}
+
+// ── ISO date helper ──────────────────────────────────────────
+function isoD(d){if(!d)return null;const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');return`${y}-${m}-${day}`;}
+
+// ── Bar drag/resize ─────────────────────────────────────────
+function attachBarDrag(lo,totalDays,pxDay){
+  const wrap=document.getElementById('t-rows');if(!wrap)return;
+  let dragging=false;
+  wrap.querySelectorAll('.bar[data-type]').forEach(bar=>{
+    const type=bar.dataset.type; // 'issue' or 'milestone'
+    // Click handler (open issue/milestone) — only if not dragging
+    bar.addEventListener('click',e=>{
+      if(dragging){e.stopPropagation();return;}
+      if(e.target.classList.contains('bar-handle'))return;
+      if(type==='issue')openIssue(+bar.dataset.pid,+bar.dataset.iid);
+      else if(type==='milestone'){const ms=S.milestones.find(m=>m.id===+bar.dataset.msid);if(ms)openUrl(ms.web_url);}
+    });
+    // Drag setup
+    const handles=bar.querySelectorAll('.bar-handle');
+    const startDrag=(e,mode)=>{
+      e.preventDefault();e.stopPropagation();
+      let moved=false;
+      const trow=bar.parentElement;
+      const trowW=trow.offsetWidth;
+      const startX=e.clientX;
+      const origLeft=parseFloat(bar.style.left);
+      const origWidth=parseFloat(bar.style.width);
+      const mv=e=>{
+        const dx=e.clientX-startX;
+        if(!moved&&Math.abs(dx)<4)return;
+        if(!moved){moved=true;dragging=true;bar.classList.add('dragging-bar');document.body.style.cssText+='cursor:'+(mode==='move'?'grabbing':'ew-resize')+';user-select:none;';}
+        const dPct=(dx/trowW)*100;
+        if(mode==='move'){
+          bar.style.left=`${origLeft+dPct}%`;
+        }else if(mode==='left'){
+          const newLeft=Math.min(origLeft+origWidth-0.2,origLeft+dPct);
+          bar.style.left=`${newLeft}%`;
+          bar.style.width=`${origLeft+origWidth-newLeft}%`;
+        }else if(mode==='right'){
+          bar.style.width=`${Math.max(0.2,origWidth+dPct)}%`;
+        }
+      };
+      const up=async e=>{
+        document.removeEventListener('mousemove',mv);
+        document.removeEventListener('mouseup',up);
+        if(!moved){dragging=false;return;} // no movement — let click handler fire
+        bar.classList.remove('dragging-bar');
+        document.body.style.cursor='';document.body.style.userSelect='';
+        const finalLeft=parseFloat(bar.style.left);
+        const finalWidth=parseFloat(bar.style.width);
+        const newStart=addD(lo,Math.round(finalLeft/100*totalDays));
+        const newEnd=addD(lo,Math.round((finalLeft+finalWidth)/100*totalDays));
+        if(newEnd<=newStart){renderGantt();dragging=false;return;}
+        if(type==='issue')await saveIssueDates(+bar.dataset.pid,+bar.dataset.iid,newStart,newEnd);
+        else if(type==='milestone')await saveMilestoneDates(+bar.dataset.msid,newStart,newEnd);
+        setTimeout(()=>dragging=false,50);
+      };
+      document.addEventListener('mousemove',mv);
+      document.addEventListener('mouseup',up);
+    };
+    handles.forEach(h=>{
+      h.addEventListener('mousedown',e=>startDrag(e,h.classList.contains('bar-handle-l')?'left':'right'));
+    });
+    bar.addEventListener('mousedown',e=>{
+      if(e.target.classList.contains('bar-handle'))return;
+      startDrag(e,'move');
+    });
+  });
+}
+
+async function saveIssueDates(pid,iid,newStart,newEnd){
+  const iss=S.allIssues.find(i=>i.project_id===pid&&i.iid===iid);
+  if(!iss)return;
+  const body={};
+  // Due date
+  body.due_date=isoD(newEnd);
+  // GanttStart in description
+  let desc=iss.description||'';
+  const oldGs=ganttStart(desc);
+  if(oldGs){
+    desc=desc.replace(/GanttStart:\s*\d{4}-\d{2}-\d{2}/i,`GanttStart: ${isoD(newStart)}`);
+  }else{
+    desc=desc.trimEnd()+`\nGanttStart: ${isoD(newStart)}`;
+  }
+  body.description=desc;
+  try{
+    await glPut(`/projects/${pid}/issues/${iid}`,body);
+    iss.due_date=isoD(newEnd);
+    iss.description=desc;
+    iss.gStart=newStart;iss.gEnd=newEnd;iss._hasOwnDates=true;
+    // Expand milestone if issue exceeds its bounds
+    if(iss.milestone){
+      const ms=S.milestones.find(m=>m.id===iss.milestone.id);
+      if(ms)await expandMilestoneIfNeeded(ms);
+    }
+  }catch(e){alert('Failed to update issue dates: '+e.message);}
+  renderGantt();
+}
+
+async function saveMilestoneDates(msid,newStart,newEnd){
+  const ms=S.milestones.find(m=>m.id===msid);
+  if(!ms)return;
+  const oldStart=parseD(ms.start_date),oldEnd=parseD(ms.due_date);
+  try{
+    // Find a project to use for milestone API — milestones are scoped to project or group
+    await glPut(`${apiBase()}/milestones/${msid}`,{start_date:isoD(newStart),due_date:isoD(newEnd)});
+    ms.start_date=isoD(newStart);ms.due_date=isoD(newEnd);
+    // Update issues that inherited milestone dates
+    await cascadeMilestoneDates(ms,oldStart,oldEnd);
+  }catch(e){alert('Failed to update milestone dates: '+e.message);}
+  renderGantt();
+}
+
+async function expandMilestoneIfNeeded(ms){
+  const msS=parseD(ms.start_date),msE=parseD(ms.due_date);
+  let needsUpdate=false;let newStart=msS,newEnd=msE;
+  ms.issues.forEach(iss=>{
+    if(iss.gStart&&newStart&&iss.gStart<newStart){newStart=iss.gStart;needsUpdate=true;}
+    if(iss.gEnd&&newEnd&&iss.gEnd>newEnd){newEnd=iss.gEnd;needsUpdate=true;}
+  });
+  if(!needsUpdate)return;
+  try{
+    await glPut(`${apiBase()}/milestones/${ms.id}`,{start_date:isoD(newStart),due_date:isoD(newEnd)});
+    ms.start_date=isoD(newStart);ms.due_date=isoD(newEnd);
+  }catch(e){console.error('Failed to expand milestone:',e);}
+}
+
+async function cascadeMilestoneDates(ms,oldStart,oldEnd){
+  const newStart=parseD(ms.start_date),newEnd=parseD(ms.due_date);
+  const promises=[];
+  ms.issues.forEach(iss=>{
+    if(iss._hasOwnDates)return; // issue has its own dates, don't touch
+    // Issue inherited from milestone — update its gantt dates
+    iss.gStart=newStart||iss.gStart;
+    iss.gEnd=newEnd||iss.gEnd;
+  });
+  // For issues whose own dates now exceed new milestone bounds, clip them
+  ms.issues.forEach(iss=>{
+    if(!iss._hasOwnDates)return;
+    let changed=false;const body={};
+    if(newEnd&&iss.gEnd&&iss.gEnd>newEnd){
+      iss.gEnd=newEnd;iss.due_date=isoD(newEnd);body.due_date=isoD(newEnd);changed=true;
+    }
+    if(newStart&&iss.gStart&&iss.gStart<newStart){
+      iss.gStart=newStart;
+      let desc=iss.description||'';
+      const old=ganttStart(desc);
+      if(old)desc=desc.replace(/GanttStart:\s*\d{4}-\d{2}-\d{2}/i,`GanttStart: ${isoD(newStart)}`);
+      else desc=desc.trimEnd()+`\nGanttStart: ${isoD(newStart)}`;
+      body.description=desc;iss.description=desc;changed=true;
+    }
+    if(changed)promises.push(glPut(`/projects/${iss.project_id}/issues/${iss.iid}`,body).catch(e=>console.error('Failed to clip issue:',e)));
+  });
+  if(promises.length)await Promise.all(promises);
 }
 
 function buildHeader(lo,hi,totalDays,pxDay){
@@ -731,7 +950,9 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
       const left=(diffD(lo,msS)/totalDays)*100,wPct=clamp((diffD(msS,msE)/totalDays)*100,0.3,100);
       const fillW=msPct!==null?msPct:0;
       barH=`<div class="bar ms-bar" style="left:${left}%;width:${wPct}%;background:${c}33;border:1px solid ${c}55;"
-        data-tid="${msTid}" onmouseenter="tipEl(event,this)" onmouseleave="hideTip()" onclick="openUrl('${ms.web_url}')">
+        data-tid="${msTid}" data-msid="${ms.id}" data-type="milestone"
+        onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
+        ${_isAdmin?'<div class="bar-handle bar-handle-l"></div><div class="bar-handle bar-handle-r"></div>':''}
         <div class="ms-bar-fill" style="width:${fillW}%;background:${c};opacity:.55;"></div>
         <span class="ms-bar-text">${wPct>4?esc(ms.title)+(msPct!==null?' \u00b7 '+msPct+'%':''):''}</span></div>`;
     }
@@ -757,7 +978,7 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
       const treeCh=isChild?`<span class="tree-ch">${isLastChild?'└':'├'}</span>`:'';
       const toggleH=hasChildren?`<button class="toggle-btn" onclick="event.stopPropagation();toggleCollapse('${colKey}')">${isCollapsed?'▸':'▾'}</button>`:'';
       const padLeft=24+depth*18;
-      lH+=`<div class="lrow iss" style="padding-left:${padLeft}px;" onclick="openUrl('${iss.web_url}')"
+      lH+=`<div class="lrow iss" style="padding-left:${padLeft}px;" onclick="openIssue(${iss.project_id},${iss.iid})"
         data-tid="${issTid}" onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
         ${treeCh}${toggleH}${prioDot}
         <span class="lrow-name" style="color:${isClosed?'var(--muted)':'var(--text)'}${hasChildren?';font-weight:500':''}">${isClosed?'✓ ':''}#${iss.iid} ${esc(iss.title)}${hasChildren?' ('+iss._children.length+')':''}</span>
@@ -774,7 +995,9 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
       ).join(''):'';
       rH+=`<div class="trow iss-row${isChild?' child-row':''}" style="--child-color:${c};width:${totalW}px;">${tLine}
         <div class="bar iss-bar" style="left:${left}%;width:${wPct}%;background:${sc}30;border:1px solid ${sc}66;border-left:4px solid ${prioC};"
-          data-tid="${issTid}" onmouseenter="tipEl(event,this)" onmouseleave="hideTip()" onclick="openUrl('${iss.web_url}')">
+          data-tid="${issTid}" data-pid="${iss.project_id}" data-iid="${iss.iid}" data-type="issue"
+          onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
+          ${_isAdmin?'<div class="bar-handle bar-handle-l"></div><div class="bar-handle bar-handle-r"></div>':''}
           ${barTypeH}<span class="bar-title">${esc(iss.title)}</span>${barEffH}${barAvH}</div>
       </div>`;
     });
@@ -835,11 +1058,19 @@ function renderRoadmap(){
 }
 
 // ── Boards storage ─────────────────────────────────────────
-function loadBoardsFromStorage(){
-  try{const d=localStorage.getItem(STORE+':'+S.path);if(d)S.boards=JSON.parse(d);}catch(e){S.boards=[];}
+async function loadBoardsFromStorage(){
+  if(_served){
+    try{const r=await fetch('/api/boards');S.boards=await r.json();}catch(e){S.boards=[];}
+  }else{
+    try{const d=localStorage.getItem(STORE+':'+S.path);if(d)S.boards=JSON.parse(d);}catch(e){S.boards=[];}
+  }
 }
-function saveBoardsToStorage(){
-  try{localStorage.setItem(STORE+':'+S.path,JSON.stringify(S.boards));}catch(e){}
+async function saveBoardsToStorage(){
+  if(_served){
+    try{await fetch('/api/boards',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(S.boards)});}catch(e){alert('Failed to save boards: '+e.message);}
+  }else{
+    try{localStorage.setItem(STORE+':'+S.path,JSON.stringify(S.boards));}catch(e){}
+  }
 }
 
 // ── Boards list ────────────────────────────────────────────
@@ -847,16 +1078,16 @@ function renderBoardsList(){
   S.activeBoardId=null;
   const view=document.getElementById('boards-view');
   let html=`<div class="boards-list-screen">
-    <div class="boards-top"><h2>Issue Boards</h2><button class="btn-new-board" onclick="openNewBoardModal()">+ New board</button></div>`;
+    <div class="boards-top"><h2>Issue Boards</h2>${_isAdmin?`<button class="btn-new-board" onclick="openNewBoardModal()">+ New board</button>`:''}</div>`;
   if(!S.boards.length){
-    html+=`<div class="empty-boards"><p>No boards yet. Create your first board to organise issues by label.</p><button class="btn-new-board" onclick="openNewBoardModal()">+ New board</button></div>`;
+    html+=`<div class="empty-boards"><p>No boards yet.${_isAdmin?' Create your first board to organise issues by label.':''}</p>${_isAdmin?`<button class="btn-new-board" onclick="openNewBoardModal()">+ New board</button>`:''}</div>`;
   }else{
     html+=`<div class="board-items">`;
     S.boards.forEach(b=>{
       const cols=b.columns.map(name=>{const l=S.labels.find(x=>x.name===name)||{color:null};return`<span class="lbl-chip" style="${lblStyle(l.color)}">${esc(name)}</span>`;}).join('');
       const open=S.allIssues.filter(i=>i.state==='opened'&&Array.isArray(i.labels)&&b.columns.some(c=>i.labels.includes(c))).length;
       html+=`<div class="board-item" onclick="openBoard('${b.id}')">
-        <button class="board-delete" onclick="event.stopPropagation();deleteBoard('${b.id}')" title="Delete">×</button>
+        ${_isAdmin?`<button class="board-delete" onclick="event.stopPropagation();deleteBoard('${b.id}')" title="Delete">×</button>`:''}
         <div class="board-item-name">${esc(b.name)}</div>
         <div class="board-item-cols">${cols||'<span style="font-size:11px;color:var(--muted)">No columns</span>'}</div>
         <div class="board-item-meta">${b.columns.length} column${b.columns.length!==1?'s':''} · ${open} open issue${open!==1?'s':''}</div>
@@ -1122,7 +1353,7 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
       const ms=iss.milestone?msMap[iss.milestone.id]:null;
       const due=parseD(iss.due_date);
       const overdue=due&&due<new Date()&&iss.state==='opened';
-      cards+=`<div class="kb-card" draggable="true" data-iid="${iss.iid}" data-pid="${iss.project_id}" data-col="${esc(name)}" onclick="openUrl('${iss.web_url}')">
+      cards+=`<div class="kb-card"${_isAdmin?' draggable="true"':''} data-iid="${iss.iid}" data-pid="${iss.project_id}" data-col="${esc(name)}" onclick="openIssue(${iss.project_id},${iss.iid})">
         <div class="kb-card-title">${esc(iss.title)}</div>
         ${chips?`<div class="kb-card-labels">${chips}</div>`:''}
         <div class="kb-card-meta">
@@ -1146,9 +1377,9 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
       <div class="kb-col-filter-drop" onclick="event.stopPropagation()">${opts}</div>
     </span>`;
   }
-  return`<div class="kb-col"${!isUnassigned?` draggable="true"`:''} data-col="${esc(name)}">
+  return`<div class="kb-col"${!isUnassigned&&_isAdmin?` draggable="true"`:''} data-col="${esc(name)}">
     <div class="kb-col-head">
-      ${!isUnassigned?`<span class="kb-col-drag" title="Drag to reorder">⠿</span>`:''}
+      ${!isUnassigned&&_isAdmin?`<span class="kb-col-drag" title="Drag to reorder">⠿</span>`:''}
       <span class="kb-col-lbl" style="background:${dot}"></span>
       <span class="kb-col-name">${esc(name)}</span>
       <span class="kb-col-cnt">${filtered.length}${activeFilters.length?'/'+issues.length:''}</span>
@@ -1220,6 +1451,7 @@ function setZoom(z){
   renderGantt();
 }
 function goBack(){
+  if(_served){location.reload();return;}
   document.getElementById('setup').style.display='flex';
   document.getElementById('app').style.display='none';
   document.getElementById('conn-btn').disabled=false;
@@ -1288,7 +1520,189 @@ function buildIssTip(iss,proj,issLabels,meta,c){
   return h;
 }
 function openUrl(u){window.open(u,'_blank','noopener');}
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+
+// ── Issue edit modal ──────────────────────────────────────────
+let _editIss=null;
+function openIssue(pid,iid){
+  const iss=S.allIssues.find(i=>i.project_id===pid&&i.iid===iid);
+  if(!iss){openUrl(`${S.baseUrl||''}/issues`);return;}
+  _editIss=iss;
+  document.getElementById('iss-modal-title').textContent=`#${iss.iid}: ${iss.title}`;
+  document.getElementById('iss-modal-link').href=iss.web_url;
+  // Start date from GanttStart in description
+  const gs=ganttStart(iss.description);
+  document.getElementById('iss-start-date').value=gs?gs.toISOString().slice(0,10):'';
+  // Due date
+  document.getElementById('iss-due-date').value=iss.due_date||'';
+  // Labels
+  document.getElementById('iss-lbl-search').value='';
+  buildIssLabelPicker('',iss);
+  // Milestone
+  const msSel=document.getElementById('iss-milestone');
+  const curMsId=iss.milestone?iss.milestone.id:null;
+  msSel.innerHTML='<option value="">None</option>'+S.milestones.map(m=>
+    `<option value="${m.id}"${m.id===curMsId?' selected':''}>${esc(m.title)}</option>`
+  ).join('');
+  // Assignees
+  document.getElementById('iss-member-search').value='';
+  document.getElementById('iss-member-pick-list').innerHTML='<div style="padding:8px;color:var(--muted);font-size:11px;">Loading members…</div>';
+  loadProjectMembers(iss.project_id).then(()=>buildIssMemberPicker('',iss));
+  // Read-only for viewers
+  const ro=!_isAdmin;
+  document.getElementById('iss-milestone').disabled=ro;
+  document.getElementById('iss-start-date').disabled=ro;
+  document.getElementById('iss-due-date').disabled=ro;
+  document.getElementById('iss-lbl-search').style.display=ro?'none':'';
+  document.getElementById('iss-member-search').style.display=ro?'none':'';
+  document.getElementById('iss-save-btn').style.display=ro?'none':'';
+  document.querySelectorAll('#iss-lbl-pick-list input').forEach(i=>i.disabled=ro);
+  document.getElementById('iss-modal-overlay').style.display='flex';
+}
+function closeIssModal(){document.getElementById('iss-modal-overlay').style.display='none';_editIss=null;}
+
+function buildIssLabelPicker(filter,iss){
+  iss=iss||_editIss;if(!iss)return;
+  const issLabels=new Set(iss.labels||[]);
+  const lower=(filter||'').toLowerCase();
+  const filtered=filter?S.labels.filter(l=>l.name.toLowerCase().includes(lower)):S.labels;
+  const ro=!_isAdmin;
+  document.getElementById('iss-lbl-pick-list').innerHTML=filtered.map(l=>{
+    const chk=issLabels.has(l.name)?'checked':'';
+    return`<label class="lbl-pick-item">
+      <input type="checkbox" value="${esc(l.name)}" ${chk}${ro?' disabled':''}>
+      <span class="lbl-pick-dot" style="background:${lblFg(l.color)}"></span>
+      <span class="lbl-pick-name">${esc(l.name)}</span>
+    </label>`;
+  }).join('');
+}
+function filterIssLabelPicker(){buildIssLabelPicker(document.getElementById('iss-lbl-search').value);}
+
+// ── Assignee picker ──────────────────────────────────────────
+const _memberCache={};
+async function loadProjectMembers(pid){
+  if(_memberCache[pid])return _memberCache[pid];
+  const members=await fetchAll(`/projects/${pid}/members/all`,{per_page:100});
+  _memberCache[pid]=members;
+  return members;
+}
+function buildIssMemberPicker(filter,iss){
+  iss=iss||_editIss;if(!iss)return;
+  const members=(_memberCache[iss.project_id]||[]).filter(m=>m.state==='active');
+  const assignedIds=new Set((iss.assignees||[]).map(a=>a.id));
+  const lower=(filter||'').toLowerCase();
+  const filtered=filter?members.filter(m=>m.name.toLowerCase().includes(lower)||m.username.toLowerCase().includes(lower)):members;
+  const ro=!_isAdmin;
+  document.getElementById('iss-member-pick-list').innerHTML=filtered.map(m=>{
+    const chk=assignedIds.has(m.id)?'checked':'';
+    const av=m.avatar_url?`<img src="${esc(m.avatar_url)}" style="width:18px;height:18px;border-radius:50%;margin-right:4px;vertical-align:middle;">`:'';
+    return`<label class="lbl-pick-item">
+      <input type="checkbox" value="${m.id}" ${chk}${ro?' disabled':''}>
+      ${av}<span class="lbl-pick-name">${esc(m.name)} <span style="color:var(--muted)">@${esc(m.username)}</span></span>
+    </label>`;
+  }).join('');
+}
+function filterIssMemberPicker(){buildIssMemberPicker(document.getElementById('iss-member-search').value);}
+
+async function saveIssueEdits(){
+  if(!_editIss||!_isAdmin)return;
+  const iss=_editIss;
+  const btn=document.getElementById('iss-save-btn');
+  btn.disabled=true;btn.textContent='Saving…';
+  try{
+    const newStart=document.getElementById('iss-start-date').value||null;
+    const newDue=document.getElementById('iss-due-date').value||null;
+    const selLabels=[...document.querySelectorAll('#iss-lbl-pick-list input:checked')].map(i=>i.value);
+    const oldLabels=new Set(iss.labels||[]);
+    const addLabels=selLabels.filter(l=>!oldLabels.has(l));
+    const removeLabels=[...oldLabels].filter(l=>!selLabels.includes(l));
+
+    // Build update body
+    const body={};
+
+    // Due date
+    if((newDue||null)!==(iss.due_date||null))body.due_date=newDue;
+
+    // Labels
+    if(addLabels.length)body.add_labels=addLabels.join(',');
+    if(removeLabels.length)body.remove_labels=removeLabels.join(',');
+
+    // Milestone
+    const selMsVal=document.getElementById('iss-milestone').value;
+    const newMsId=selMsVal?parseInt(selMsVal):0;
+    const oldMsId=iss.milestone?iss.milestone.id:0;
+    if(newMsId!==oldMsId)body.milestone_id=newMsId;
+
+    // Assignees
+    const selAssignees=[...document.querySelectorAll('#iss-member-pick-list input:checked')].map(i=>parseInt(i.value));
+    const oldAssigneeIds=(iss.assignees||[]).map(a=>a.id).sort().join(',');
+    const newAssigneeIds=[...selAssignees].sort().join(',');
+    if(newAssigneeIds!==oldAssigneeIds)body.assignee_ids=selAssignees;
+
+    // GanttStart in description
+    const oldStart=ganttStart(iss.description);
+    const oldStartStr=oldStart?oldStart.toISOString().slice(0,10):null;
+    if(newStart!==oldStartStr){
+      let desc=iss.description||'';
+      if(oldStartStr){
+        // Replace existing GanttStart line
+        desc=desc.replace(/GanttStart:\s*\d{4}-\d{2}-\d{2}/i,newStart?`GanttStart: ${newStart}`:'');
+        if(!newStart)desc=desc.replace(/\n?\s*$/,''); // clean trailing whitespace
+      }else if(newStart){
+        // Append GanttStart
+        desc=desc.trimEnd()+`\nGanttStart: ${newStart}`;
+      }
+      body.description=desc;
+    }
+
+    if(Object.keys(body).length){
+      const updated=await glPut(`/projects/${iss.project_id}/issues/${iss.iid}`,body);
+      // Update local state
+      if(body.due_date!==undefined)iss.due_date=newDue;
+      if(body.description!==undefined)iss.description=body.description;
+      iss.labels=selLabels;
+      if(body.milestone_id!==undefined){
+        // Remove issue from old milestone's issues array
+        if(iss.milestone){
+          const oldMs=S.milestones.find(m=>m.id===iss.milestone.id);
+          if(oldMs)oldMs.issues=oldMs.issues.filter(i=>i!==iss);
+        }
+        if(newMsId){
+          const newMs=S.milestones.find(m=>m.id===newMsId);
+          iss.milestone={id:newMs.id,title:newMs.title,iid:newMs.iid};
+          if(newMs&&!newMs.issues.includes(iss))newMs.issues.push(iss);
+        }else{
+          iss.milestone=null;
+        }
+      }
+      if(body.assignee_ids!==undefined){
+        const members=_memberCache[iss.project_id]||[];
+        iss.assignees=selAssignees.map(id=>members.find(m=>m.id===id)).filter(Boolean);
+      }
+      // Recalculate gantt dates
+      const ms=S.milestones.find(m=>iss.milestone&&m.id===iss.milestone.id);
+      const ownStart=ganttStart(iss.description);
+      const ownEnd=ganttDue(iss.description)||parseD(iss.due_date);
+      iss.gStart=ownStart||(ms?parseD(ms.start_date):null)||parseD(iss.created_at);
+      iss.gEnd=ownEnd||(ms?parseD(ms.due_date):null);
+      iss._hasOwnDates=!!(ownStart||ownEnd);
+      // Expand milestone if issue exceeds its bounds
+      if(ms)await expandMilestoneIfNeeded(ms);
+    }
+    closeIssModal();
+    // Re-render current view
+    if(S.currentView==='gantt'){renderGantt();}
+    else if(S.currentView==='boards'){
+      if(S.activeBoardId)refreshKanban();else renderBoardsList();
+    }
+  }catch(e){
+    alert('Failed to save: '+e.message);
+  }finally{
+    btn.disabled=false;btn.textContent='Save';
+  }
+}
+
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeIssModal();closeModal();}});
+if(_served)connect();
 </script>
 </body>
 </html>

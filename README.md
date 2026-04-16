@@ -64,6 +64,64 @@ The app recognizes labels matching these patterns and displays them as compact b
 - **Persistence**: board configuration and card order stored in `localStorage` per project/group
 - **Refresh**: manual refresh button reloads all data from GitLab
 
+## Shared Server (Read-Only)
+
+To share a dashboard with your team, run the included proxy server. It keeps your GitLab token server-side, stores boards on the server, and supports two roles via basic auth.
+
+**Requirements:** Node.js 18+, no npm dependencies.
+
+```bash
+GITLAB_URL=https://gitlab.com \
+GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
+SOURCE_TYPE=group \
+SOURCE_PATH=my-org/my-group \
+ADMIN_USER=admin \
+ADMIN_PASS=admin-secret \
+AUTH_USER=team \
+AUTH_PASS=team-secret \
+PORT=3000 \
+node server.js
+```
+
+| Variable | Description |
+|----------|-------------|
+| `GITLAB_URL` | GitLab instance URL |
+| `GITLAB_TOKEN` | Personal access token (`api` scope for full functionality) |
+| `SOURCE_TYPE` | `project` or `group` |
+| `SOURCE_PATH` | Project/group path (e.g. `namespace/project`) |
+| `ADMIN_USER` | Admin username (can create/edit/delete boards, move issues) |
+| `ADMIN_PASS` | Admin password |
+| `AUTH_USER` | Viewer username (read-only access) |
+| `AUTH_PASS` | Viewer password |
+| `PORT` | Listen port (default: `3000`) |
+
+### Roles
+
+| | Admin | Viewer |
+|---|---|---|
+| View Gantt, Roadmap, Boards | Yes | Yes |
+| Create / delete boards | Yes | No |
+| Reorder columns and cards | Yes | No |
+| Move issues between columns (GitLab label sync) | Yes | No |
+| Filter columns by label | Yes | Yes |
+
+Boards are stored server-side in `boards.json`. The file is created automatically on first save.
+
+### Migrating boards from local browser storage
+
+If you have boards saved in your browser's localStorage from using `index.html` directly, you can export them and import them into the server:
+
+1. Open your browser's developer console (F12) on the page where your boards are saved
+2. Run:
+   ```js
+   copy(localStorage.getItem('gl-gantt-boards-v2:YOUR/PROJECT/PATH'))
+   ```
+   (replace `YOUR/PROJECT/PATH` with your actual project/group path)
+3. Save the clipboard content to `boards.json` in the server directory
+4. Restart the server
+
+For production, put it behind a reverse proxy (nginx/Caddy) with HTTPS.
+
 ## Tech
 
-Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend. Fonts loaded from Google Fonts (Outfit + JetBrains Mono).
+Single HTML file with embedded CSS and JavaScript. No build step, no dependencies, no backend required for personal use. Fonts loaded from Google Fonts (Outfit + JetBrains Mono). The optional `server.js` is a zero-dependency Node.js proxy for shared team access.
