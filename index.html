@@ -1348,6 +1348,8 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
   // Collect all labels present in this column's issues (excluding the column's own label)
   const labelSet=new Set();
   issues.forEach(iss=>{(iss.labels||[]).forEach(l=>{if(l!==name)labelSet.add(l);});});
+  // Always include active filters so they can be unchecked even if no issues match
+  if(colFilters)colFilters.forEach(l=>labelSet.add(l));
   const availLabels=[...labelSet].sort();
   const activeFilters=colFilters||[];
   // Filter issues by active label filters
