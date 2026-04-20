@@ -71,6 +71,11 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
 .s-cell.wknd{background:rgba(255,255,255,.018);}
 .lrow{min-height:36px;display:flex;align-items:center;padding:0 10px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;gap:6px;transition:background .1s;min-width:max-content;}
 .lrow:hover{background:rgba(255,255,255,.04);}
+.lrow.iss[draggable=true]{cursor:grab;}
+.lrow.drag-over-top{border-top:2px solid var(--accent)!important;}
+.lrow.drag-over-bot{border-bottom:2px solid var(--accent)!important;}
+.lrow.ms.drag-over-ms{background:rgba(88,166,255,.1);}
+.lrow.dragging-row{opacity:.4;}
 .lrow.ms{min-height:42px;background:rgba(255,255,255,.02);font-weight:500;}
 .lrow.iss{padding-left:24px;min-height:40px;}
 .ms-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
@@ -403,7 +408,7 @@ const COLORS=['#6366f1','#06b6d4','#f59e0b','#10b981','#f43f5e','#8b5cf6','#22d3
 const ZOOM={week:{pxDay:26,unit:'day'},month:{pxDay:5.5,unit:'week'},quarter:{pxDay:2,unit:'month'}};
 const STORE='gl-gantt-boards-v2';
 
-const S={baseUrl:'',token:'',type:'project',path:'',zoom:'month',milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set()};
+const S={baseUrl:'',token:'',type:'project',path:'',zoom:'month',milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set(),ganttOrder:{}};
 
 // ── Utils ──────────────────────────────────────────────────
 const parseD=s=>{if(!s)return null;const d=new Date(s);return isNaN(d)?null:d};
@@ -589,6 +594,7 @@ async function connect(){
     showLoader('gantt-view',`Loading issues for ${mss.length} milestones…`);
     await loadData(mss);
     await loadBoardsFromStorage();
+    await loadGanttOrder();
     renderBoardsList();
   }catch(e){
     if(!_served){
@@ -722,6 +728,7 @@ function renderGantt(){
   buildHeader(lo,hi,totalDays,pxDay);
   buildRows(mss,lo,totalDays,pxDay,totalW);
   buildLegend(mss);
+  attachGanttRowDrag();
   if(_isAdmin)attachBarDrag(lo,totalDays,pxDay);
   const todayOff=diffD(lo,new Date());
   const tl=document.getElementById('g-timeline');
@@ -951,10 +958,13 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
     const cnt=ms.issues.length,closed=ms.issues.filter(i=>i.state==='closed').length;
     const msPct=cnt?Math.round((closed/cnt)*100):null;
     const msTid=uid();_tipMap[msTid]=buildMsTip(ms,msS,msE,cnt,closed,msPct,c);
-    lH+=`<div class="lrow ms" onclick="openUrl('${ms.web_url}')"
+    const msColKey='ms:'+ms.id;
+    const msCollapsed=S.collapsed.has(msColKey);
+    lH+=`<div class="lrow ms" data-msid="${ms.id}"
       data-tid="${msTid}" onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
+      ${cnt?`<button class="toggle-btn" onclick="event.stopPropagation();toggleCollapse('${msColKey}')">${msCollapsed?'▸':'▾'}</button>`:''}
       <div class="ms-dot" style="background:${c}"></div>
-      <span class="lrow-name">${esc(ms.title)}</span>
+      <span class="lrow-name" onclick="openUrl('${ms.web_url}')" style="cursor:pointer;">${esc(ms.title)}</span>
       ${cnt?`<span class="lrow-badge" style="background:${c}22;color:${c}">${closed}/${cnt} (${msPct}%)</span>`:''}
     </div>`;
     let barH='';
@@ -968,9 +978,20 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
         <div class="ms-bar-fill" style="width:${fillW}%;background:${c};opacity:.55;"></div>
         <span class="ms-bar-text">${wPct>4?esc(ms.title)+(msPct!==null?' \u00b7 '+msPct+'%':''):''}</span></div>`;
     }
-    rH+=`<div class="trow ms-row" style="width:${totalW}px;">${tLine}${barH}</div>`;
+    rH+=`<div class="trow ms-row" data-msid="${ms.id}" style="width:${totalW}px;">${tLine}${barH}</div>`;
 
-    ms.issues.forEach(iss=>{
+    // Apply custom gantt order
+    const msOrder=S.ganttOrder[ms.id]||[];
+    const sortedIssues=ms.issues.slice().sort((a,b)=>{
+      const ai=msOrder.indexOf(a.project_id+':'+a.iid);
+      const bi=msOrder.indexOf(b.project_id+':'+b.iid);
+      if(ai===-1&&bi===-1)return 0;
+      if(ai===-1)return 1;
+      if(bi===-1)return -1;
+      return ai-bi;
+    });
+    sortedIssues.forEach(iss=>{
+      if(msCollapsed)return;
       if(!iss.gStart||!iss.gEnd||iss.gEnd<=iss.gStart)return;
       if(issCollapsed(iss))return;
       const isClosed=iss.state==='closed';
@@ -991,7 +1012,9 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
       const toggleH=hasChildren?`<button class="toggle-btn" onclick="event.stopPropagation();toggleCollapse('${colKey}')">${isCollapsed?'▸':'▾'}</button>`:'';
       const padLeft=24+depth*18;
       lH+=`<div class="lrow iss" style="padding-left:${padLeft}px;" onclick="openIssue(${iss.project_id},${iss.iid})"
-        data-tid="${issTid}" onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
+        data-tid="${issTid}" data-msid="${ms.id}" data-pid="${iss.project_id}" data-iid="${iss.iid}"
+        ${_isAdmin?' draggable="true"':''}
+        onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
         ${treeCh}${toggleH}${prioDot}
         <span class="lrow-name" style="color:${isClosed?'var(--muted)':'var(--text)'}${hasChildren?';font-weight:500':''}">${isClosed?'✓ ':''}#${iss.iid} ${esc(iss.title)}${hasChildren?' ('+iss._children.length+')':''}</span>
         <span class="iss-meta">${pills}${avHtml}</span>
@@ -1005,7 +1028,7 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
         a.avatar_url?`<img class="bar-av-img" src="${esc(a.avatar_url)}" title="${esc(a.name||a.username)}">`
         :`<span class="bar-av-init" title="${esc(a.name||a.username)}">${esc((a.name||a.username||'?')[0].toUpperCase())}</span>`
       ).join(''):'';
-      rH+=`<div class="trow iss-row${isChild?' child-row':''}" style="--child-color:${c};width:${totalW}px;">${tLine}
+      rH+=`<div class="trow iss-row${isChild?' child-row':''}" data-msid="${ms.id}" data-pid="${iss.project_id}" data-iid="${iss.iid}" style="--child-color:${c};width:${totalW}px;">${tLine}
         <div class="bar iss-bar" style="left:${left}%;width:${wPct}%;background:${sc}30;border:1px solid ${sc}66;border-left:4px solid ${prioC};"
           data-tid="${issTid}" data-pid="${iss.project_id}" data-iid="${iss.iid}" data-type="issue"
           onmouseenter="tipEl(event,this)" onmouseleave="hideTip()">
@@ -1015,6 +1038,144 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
     });
   });
   lb.innerHTML=lH;tr.innerHTML=rH;
+}
+
+// ── Gantt order persistence ──────────────────────────────────
+const GANTT_ORDER_FILE='gantt-order';
+async function loadGanttOrder(){
+  if(_served){
+    try{const r=await fetch('/api/gantt-order');if(r.ok)S.ganttOrder=await r.json();}catch(e){S.ganttOrder={};}
+  }else{
+    try{const d=localStorage.getItem(STORE+':'+S.path+':gantt-order');if(d)S.ganttOrder=JSON.parse(d);}catch(e){S.ganttOrder={};}
+  }
+}
+async function saveGanttOrder(){
+  if(_served){
+    try{await fetch('/api/gantt-order',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(S.ganttOrder)});}catch(e){}
+  }else{
+    try{localStorage.setItem(STORE+':'+S.path+':gantt-order',JSON.stringify(S.ganttOrder));}catch(e){}
+  }
+}
+
+function msOrderKeys(ms){
+  return ms.issues.map(i=>i.project_id+':'+i.iid);
+}
+
+function attachGanttRowDrag(){
+  if(!_isAdmin)return;
+  const lb=document.getElementById('g-labels-body');
+  if(!lb)return;
+  let dragKey=null,dragMsId=null;
+
+  lb.addEventListener('dragstart',e=>{
+    const row=e.target.closest('.lrow.iss[draggable]');
+    if(!row){e.preventDefault();return;}
+    dragKey=row.dataset.pid+':'+row.dataset.iid;
+    dragMsId=parseInt(row.dataset.msid);
+    row.classList.add('dragging-row');
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('text/plain',dragKey);
+  });
+
+  lb.addEventListener('dragend',e=>{
+    lb.querySelectorAll('.dragging-row,.drag-over-top,.drag-over-bot,.drag-over-ms').forEach(el=>
+      el.classList.remove('dragging-row','drag-over-top','drag-over-bot','drag-over-ms'));
+    dragKey=null;dragMsId=null;
+  });
+
+  lb.addEventListener('dragover',e=>{
+    if(!dragKey)return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='move';
+    // Clear all indicators first
+    lb.querySelectorAll('.drag-over-top,.drag-over-bot,.drag-over-ms').forEach(el=>
+      el.classList.remove('drag-over-top','drag-over-bot','drag-over-ms'));
+    const target=e.target.closest('.lrow');
+    if(!target)return;
+    // Don't show indicator on the dragged row itself
+    const tKey=target.dataset.pid?target.dataset.pid+':'+target.dataset.iid:null;
+    if(tKey===dragKey)return;
+    if(target.classList.contains('ms')){
+      target.classList.add('drag-over-ms');
+    }else if(target.classList.contains('iss')){
+      const rect=target.getBoundingClientRect();
+      if(e.clientY<rect.top+rect.height/2)target.classList.add('drag-over-top');
+      else target.classList.add('drag-over-bot');
+    }
+  });
+
+  lb.addEventListener('dragleave',e=>{
+    const target=e.target.closest?.('.lrow');
+    if(target)target.classList.remove('drag-over-top','drag-over-bot','drag-over-ms');
+  });
+
+  lb.addEventListener('drop',async e=>{
+    e.preventDefault();
+    if(!dragKey)return;
+    lb.querySelectorAll('.drag-over-top,.drag-over-bot,.drag-over-ms').forEach(el=>
+      el.classList.remove('drag-over-top','drag-over-bot','drag-over-ms'));
+    const target=e.target.closest('.lrow');
+    if(!target)return;
+
+    let targetMsId,insertIdx=-1; // -1 means append
+
+    if(target.classList.contains('ms')){
+      targetMsId=parseInt(target.dataset.msid);
+      // Append at end
+    }else if(target.classList.contains('iss')){
+      targetMsId=parseInt(target.dataset.msid);
+      const tKey=target.dataset.pid+':'+target.dataset.iid;
+      if(tKey===dragKey)return;
+      const rect=target.getBoundingClientRect();
+      const above=e.clientY<rect.top+rect.height/2;
+      // Get current order for target milestone
+      const tMs=S.milestones.find(m=>m.id===targetMsId);
+      if(!tMs)return;
+      const curOrder=(S.ganttOrder[targetMsId]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
+      const tIdx=curOrder.indexOf(tKey);
+      insertIdx=above?tIdx:(tIdx+1);
+    }else return;
+
+    const iss=S.allIssues.find(i=>i.project_id+':'+i.iid===dragKey);
+    if(!iss)return;
+
+    // If moving to a different milestone, call API
+    if(targetMsId!==dragMsId){
+      try{
+        await glPut(`/projects/${iss.project_id}/issues/${iss.iid}`,{milestone_id:targetMsId});
+      }catch(err){
+        alert('Failed to move issue: '+err.message);return;
+      }
+      // Update local milestone arrays
+      const oldMs=S.milestones.find(m=>m.id===dragMsId);
+      const newMs=S.milestones.find(m=>m.id===targetMsId);
+      if(oldMs)oldMs.issues=oldMs.issues.filter(i=>i!==iss);
+      if(newMs&&!newMs.issues.includes(iss))newMs.issues.push(iss);
+      iss.milestone=newMs?{id:newMs.id,title:newMs.title,iid:newMs.iid}:null;
+      // Clean old milestone order
+      if(S.ganttOrder[dragMsId]){
+        S.ganttOrder[dragMsId]=S.ganttOrder[dragMsId].filter(k=>k!==dragKey);
+        if(!S.ganttOrder[dragMsId].length)delete S.ganttOrder[dragMsId];
+      }
+      // Recalculate dates
+      const ownStart=ganttStart(iss.description);
+      const ownEnd=ganttDue(iss.description)||parseD(iss.due_date);
+      iss.gStart=ownStart||(newMs?parseD(newMs.start_date):null)||parseD(iss.created_at);
+      iss.gEnd=ownEnd||(newMs?parseD(newMs.due_date):null);
+      iss._hasOwnDates=!!(ownStart||ownEnd);
+    }
+
+    // Build new order for target milestone
+    const tMs=S.milestones.find(m=>m.id===targetMsId);
+    if(!tMs)return;
+    const order=(S.ganttOrder[targetMsId]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
+    if(insertIdx>=0&&insertIdx<=order.length)order.splice(insertIdx,0,dragKey);
+    else order.push(dragKey);
+    S.ganttOrder[targetMsId]=order;
+
+    await saveGanttOrder();
+    renderGantt();
+  });
 }
 
 function buildLegend(mss){
@@ -1470,7 +1631,7 @@ function goBack(){
   document.getElementById('app').style.display='none';
   document.getElementById('conn-btn').disabled=false;
   document.getElementById('conn-btn').textContent='Connect to GitLab';
-  Object.assign(S,{milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set()});
+  Object.assign(S,{milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set(),ganttOrder:{}});
 }
 function onTypeChange(){
   const v=document.getElementById('source-type').value;

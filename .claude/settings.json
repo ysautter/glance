@@ -1,0 +1,23 @@
+{
+  "env": {
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "1",
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_AUTH_TOKEN": "",
+    "ANTHROPIC_MODEL": "opus",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"
+  },
+  "model": "opus",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notify-send -u normal 'Claude Code' 'Finished Output'"
+          }
+        ]
+      }
+    ]
+  },
+  "effortLevel": "medium"
+}

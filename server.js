@@ -78,6 +78,16 @@ function saveBoards(boards) {
   fs.writeFileSync(BOARDS_FILE, JSON.stringify(boards, null, 2));
 }
 
+// ── Gantt order persistence ─────────────────────────────────
+const GANTT_ORDER_FILE = path.join(__dirname, 'gantt-order.json');
+function loadGanttOrder() {
+  try { return JSON.parse(fs.readFileSync(GANTT_ORDER_FILE, 'utf-8')); }
+  catch { return {}; }
+}
+function saveGanttOrder(order) {
+  fs.writeFileSync(GANTT_ORDER_FILE, JSON.stringify(order, null, 2));
+}
+
 // ── Prepare index.html with served-mode config ──────────────
 const rawHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf-8');
 function buildHtml(role, username) {
@@ -391,6 +401,32 @@ const server = http.createServer(async (req, res) => {
       const boards = JSON.parse(body.toString());
       if (!Array.isArray(boards)) throw new Error('Expected array');
       saveBoards(boards);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Gantt order API ─────────────────────────────────────
+  if (p === '/api/gantt-order' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(loadGanttOrder()));
+    return;
+  }
+  if (p === '/api/gantt-order' && req.method === 'PUT') {
+    if (role !== 'admin') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Admin access required' }));
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const order = JSON.parse(body.toString());
+      if (typeof order !== 'object' || Array.isArray(order)) throw new Error('Expected object');
+      saveGanttOrder(order);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
