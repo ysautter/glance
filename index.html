@@ -592,9 +592,9 @@ async function connect(){
     S.labels=labels;S.allIssues=allIssues;
     if(!mss.length){showLoader('gantt-view','No milestones found. Create milestones with start/due dates in GitLab first.');return;}
     showLoader('gantt-view',`Loading issues for ${mss.length} milestones…`);
-    await loadData(mss);
     await loadBoardsFromStorage();
     await loadGanttOrder();
+    await loadData(mss);
     renderBoardsList();
   }catch(e){
     if(!_served){
@@ -981,7 +981,7 @@ function buildRows(mss,lo,totalDays,pxDay,totalW){
     rH+=`<div class="trow ms-row" data-msid="${ms.id}" style="width:${totalW}px;">${tLine}${barH}</div>`;
 
     // Apply custom gantt order
-    const msOrder=S.ganttOrder[ms.id]||[];
+    const msOrder=S.ganttOrder[String(ms.id)]||[];
     const sortedIssues=ms.issues.slice().sort((a,b)=>{
       const ai=msOrder.indexOf(a.project_id+':'+a.iid);
       const bi=msOrder.indexOf(b.project_id+':'+b.iid);
@@ -1131,7 +1131,7 @@ function attachGanttRowDrag(){
       // Get current order for target milestone
       const tMs=S.milestones.find(m=>m.id===targetMsId);
       if(!tMs)return;
-      const curOrder=(S.ganttOrder[targetMsId]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
+      const curOrder=(S.ganttOrder[String(targetMsId)]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
       const tIdx=curOrder.indexOf(tKey);
       insertIdx=above?tIdx:(tIdx+1);
     }else return;
@@ -1153,9 +1153,10 @@ function attachGanttRowDrag(){
       if(newMs&&!newMs.issues.includes(iss))newMs.issues.push(iss);
       iss.milestone=newMs?{id:newMs.id,title:newMs.title,iid:newMs.iid}:null;
       // Clean old milestone order
-      if(S.ganttOrder[dragMsId]){
-        S.ganttOrder[dragMsId]=S.ganttOrder[dragMsId].filter(k=>k!==dragKey);
-        if(!S.ganttOrder[dragMsId].length)delete S.ganttOrder[dragMsId];
+      const oldKey=String(dragMsId);
+      if(S.ganttOrder[oldKey]){
+        S.ganttOrder[oldKey]=S.ganttOrder[oldKey].filter(k=>k!==dragKey);
+        if(!S.ganttOrder[oldKey].length)delete S.ganttOrder[oldKey];
       }
       // Recalculate dates
       const ownStart=ganttStart(iss.description);
@@ -1168,10 +1169,11 @@ function attachGanttRowDrag(){
     // Build new order for target milestone
     const tMs=S.milestones.find(m=>m.id===targetMsId);
     if(!tMs)return;
-    const order=(S.ganttOrder[targetMsId]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
+    const tKey2=String(targetMsId);
+    const order=(S.ganttOrder[tKey2]||msOrderKeys(tMs)).filter(k=>k!==dragKey);
     if(insertIdx>=0&&insertIdx<=order.length)order.splice(insertIdx,0,dragKey);
     else order.push(dragKey);
-    S.ganttOrder[targetMsId]=order;
+    S.ganttOrder[tKey2]=order;
 
     await saveGanttOrder();
     renderGantt();
