@@ -61,7 +61,7 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
 .g-labels-body{overflow-y:auto;overflow-x:auto;flex:1;}
 .g-labels-body::-webkit-scrollbar{width:0;height:4px;}
 .g-labels-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-.g-timeline{flex:1;overflow:auto;display:flex;flex-direction:column;position:relative;}
+.g-timeline{flex:1;overflow:auto;display:flex;flex-direction:column;position:relative;cursor:grab;}
 .g-head{position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
 .g-head-months,.g-head-subs{display:flex;}
 .g-head-months{height:28px;border-bottom:1px solid rgba(255,255,255,.07);}
@@ -414,10 +414,11 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
 
 <script>
 const COLORS=['#6366f1','#06b6d4','#f59e0b','#10b981','#f43f5e','#8b5cf6','#22d3ee','#f97316','#84cc16','#ec4899','#3b82f6','#d946ef'];
-const ZOOM={week:{pxDay:26,unit:'day'},month:{pxDay:5.5,unit:'week'},quarter:{pxDay:2,unit:'month'}};
+const ZOOM={week:{pxDay:26},month:{pxDay:5.5},quarter:{pxDay:2}};
+const ZOOM_MIN=0.5,ZOOM_MAX=60;
 const STORE='gl-gantt-boards-v2';
 
-const S={baseUrl:'',token:'',type:'project',path:'',zoom:'month',milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set(),ganttOrder:{}};
+const S={baseUrl:'',token:'',type:'project',path:'',zoom:'month',pxDay:5.5,milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set(),ganttOrder:{}};
 
 // ── Utils ──────────────────────────────────────────────────
 const parseD=s=>{if(!s)return null;const d=new Date(s);return isNaN(d)?null:d};
@@ -732,7 +733,7 @@ function renderGantt(){
   });
   lo=addD(lo,-14);hi=addD(hi,14);
   const totalDays=diffD(lo,hi)||1;
-  const pxDay=ZOOM[S.zoom].pxDay;
+  const pxDay=S.pxDay||ZOOM[S.zoom].pxDay;
   const totalW=Math.round(totalDays*pxDay);
   buildHeader(lo,hi,totalDays,pxDay);
   buildRows(mss,lo,totalDays,pxDay,totalW);
@@ -741,7 +742,57 @@ function renderGantt(){
   if(_isAdmin)attachBarDrag(lo,totalDays,pxDay);
   const todayOff=diffD(lo,new Date());
   const tl=document.getElementById('g-timeline');
-  setTimeout(()=>{if(tl)tl.scrollLeft=Math.max(0,todayOff*pxDay-tl.clientWidth/2);},80);
+  if(!S._scrollToToday)setTimeout(()=>{if(tl)tl.scrollLeft=Math.max(0,todayOff*pxDay-tl.clientWidth/2);},80);
+  S._scrollToToday=false;
+  attachTimelineZoom();
+}
+
+let _tlControlsAttached=false;
+function attachTimelineZoom(){
+  const tl=document.getElementById('g-timeline');
+  if(!tl||_tlControlsAttached)return;
+  _tlControlsAttached=true;
+
+  // Ctrl+scroll zoom
+  tl.addEventListener('wheel',e=>{
+    if(!e.ctrlKey&&!e.metaKey)return;
+    e.preventDefault();
+    const oldPx=S.pxDay;
+    const factor=e.deltaY<0?1.15:1/1.15;
+    const newPx=Math.min(ZOOM_MAX,Math.max(ZOOM_MIN,oldPx*factor));
+    if(newPx===oldPx)return;
+    const rect=tl.getBoundingClientRect();
+    const cursorX=e.clientX-rect.left;
+    const dayAtCursor=(tl.scrollLeft+cursorX)/oldPx;
+    S.pxDay=newPx;
+    S._scrollToToday=true;
+    updateZoomPills();
+    renderGantt();
+    tl.scrollLeft=dayAtCursor*newPx-cursorX;
+  },{passive:false});
+
+  // Click-and-drag pan
+  let panning=false,panStartX=0,panStartY=0,scrollX0=0,scrollY0=0;
+  tl.addEventListener('mousedown',e=>{
+    // Only pan on empty space (not on bars or handles)
+    if(e.target.closest('.bar,.bar-handle'))return;
+    if(e.button!==0)return;
+    panning=true;
+    panStartX=e.clientX;panStartY=e.clientY;
+    scrollX0=tl.scrollLeft;scrollY0=tl.scrollTop;
+    tl.style.cursor='grabbing';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove',e=>{
+    if(!panning)return;
+    tl.scrollLeft=scrollX0-(e.clientX-panStartX);
+    tl.scrollTop=scrollY0-(e.clientY-panStartY);
+  });
+  document.addEventListener('mouseup',()=>{
+    if(!panning)return;
+    panning=false;
+    tl.style.cursor='';
+  });
 }
 
 // ── ISO date helper ──────────────────────────────────────────
@@ -911,7 +962,7 @@ function buildHeader(lo,hi,totalDays,pxDay){
   }
   mH+='</div>';
   let sH='<div class="g-head-subs">';
-  const unit=ZOOM[S.zoom].unit;
+  const unit=pxDay>=14?'day':pxDay>=3.5?'week':'month';
   if(unit==='day'){
     for(let d=0;d<totalDays;d++){
       const dt=addD(lo,d);const dow=dt.getDay();
@@ -1198,7 +1249,7 @@ function scrollToToday(){
   S.milestones.forEach(ms=>{const s=parseD(ms.start_date);if(s&&s<lo)lo=s;});
   lo=addD(lo,-14);
   const tl=document.getElementById('g-timeline');
-  if(tl)tl.scrollLeft=Math.max(0,diffD(lo,new Date())*ZOOM[S.zoom].pxDay-tl.clientWidth/2);
+  if(tl)tl.scrollLeft=Math.max(0,diffD(lo,new Date())*S.pxDay-tl.clientWidth/2);
 }
 
 // ── Roadmap ────────────────────────────────────────────────
@@ -1633,8 +1684,15 @@ function switchView(v){
 }
 function setZoom(z){
   S.zoom=z;
-  ['week','month','quarter'].forEach(z2=>document.getElementById('z-'+z2)?.classList.toggle('on',z2===z));
+  S.pxDay=ZOOM[z].pxDay;
+  updateZoomPills();
   renderGantt();
+}
+function updateZoomPills(){
+  const px=S.pxDay||ZOOM[S.zoom].pxDay;
+  ['week','month','quarter'].forEach(z2=>{
+    document.getElementById('z-'+z2)?.classList.toggle('on',Math.abs(px-ZOOM[z2].pxDay)<0.1);
+  });
 }
 function goBack(){
   if(_served){location.reload();return;}
@@ -1642,7 +1700,7 @@ function goBack(){
   document.getElementById('app').style.display='none';
   document.getElementById('conn-btn').disabled=false;
   document.getElementById('conn-btn').textContent='Connect to GitLab';
-  Object.assign(S,{milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',collapsed:new Set(),ganttOrder:{}});
+  Object.assign(S,{milestones:[],labels:[],allIssues:[],boards:[],activeBoardId:null,currentView:'gantt',pxDay:5.5,collapsed:new Set(),ganttOrder:{}});
 }
 function onTypeChange(){
   const v=document.getElementById('source-type').value;
