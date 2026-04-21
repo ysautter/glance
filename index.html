@@ -365,6 +365,15 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
         <div class="lbl-pick-list" id="iss-member-pick-list" style="max-height:160px;"></div>
       </div>
       <div class="modal-field">
+        <label>Classification</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <select id="iss-meta-type" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;"></select>
+          <select id="iss-meta-effort" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;"></select>
+          <select id="iss-meta-priority" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;"></select>
+          <select id="iss-meta-status" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;"></select>
+        </div>
+      </div>
+      <div class="modal-field">
         <label>Labels</label>
         <input type="text" id="iss-lbl-search" placeholder="Search labels…" oninput="filterIssLabelPicker()">
         <div class="lbl-pick-list" id="iss-lbl-pick-list" style="max-height:200px;"></div>
@@ -1711,6 +1720,19 @@ function openIssue(pid,iid){
   document.getElementById('iss-start-date').value=gs?gs.toISOString().slice(0,10):'';
   // Due date
   document.getElementById('iss-due-date').value=iss.due_date||'';
+  // Classification dropdowns
+  const issLabels=iss.labels||[];
+  function buildMetaSelect(elId,map,label){
+    const el=document.getElementById(elId);
+    const cur=issLabels.find(l=>map[l]);
+    el.innerHTML=`<option value="">${label}: None</option>`+Object.entries(map).map(([k,v])=>
+      `<option value="${esc(k)}"${k===cur?' selected':''}>${v.short}</option>`
+    ).join('');
+  }
+  buildMetaSelect('iss-meta-type',TYPE_MAP,'Type');
+  buildMetaSelect('iss-meta-effort',EFFORT_MAP,'Effort');
+  buildMetaSelect('iss-meta-priority',PRIORITY_MAP,'Priority');
+  buildMetaSelect('iss-meta-status',STATUS_MAP,'Status');
   // Labels
   document.getElementById('iss-lbl-search').value='';
   buildIssLabelPicker('',iss);
@@ -1729,6 +1751,10 @@ function openIssue(pid,iid){
   document.getElementById('iss-milestone').disabled=ro;
   document.getElementById('iss-start-date').disabled=ro;
   document.getElementById('iss-due-date').disabled=ro;
+  document.getElementById('iss-meta-type').disabled=ro;
+  document.getElementById('iss-meta-effort').disabled=ro;
+  document.getElementById('iss-meta-priority').disabled=ro;
+  document.getElementById('iss-meta-status').disabled=ro;
   document.getElementById('iss-lbl-search').style.display=ro?'none':'';
   document.getElementById('iss-member-search').style.display=ro?'none':'';
   document.getElementById('iss-save-btn').style.display=ro?'none':'';
@@ -1741,7 +1767,8 @@ function buildIssLabelPicker(filter,iss){
   iss=iss||_editIss;if(!iss)return;
   const issLabels=new Set(iss.labels||[]);
   const lower=(filter||'').toLowerCase();
-  const filtered=filter?S.labels.filter(l=>l.name.toLowerCase().includes(lower)):S.labels;
+  const nonMeta=S.labels.filter(l=>!META_LABELS.has(l.name));
+  const filtered=filter?nonMeta.filter(l=>l.name.toLowerCase().includes(lower)):nonMeta;
   const ro=!_isAdmin;
   document.getElementById('iss-lbl-pick-list').innerHTML=filtered.map(l=>{
     const chk=issLabels.has(l.name)?'checked':'';
@@ -1788,7 +1815,11 @@ async function saveIssueEdits(){
   try{
     const newStart=document.getElementById('iss-start-date').value||null;
     const newDue=document.getElementById('iss-due-date').value||null;
-    const selLabels=[...document.querySelectorAll('#iss-lbl-pick-list input:checked')].map(i=>i.value);
+    // Combine meta dropdowns + checkbox labels
+    const checkboxLabels=[...document.querySelectorAll('#iss-lbl-pick-list input:checked')].map(i=>i.value);
+    const metaSelects=['iss-meta-type','iss-meta-effort','iss-meta-priority','iss-meta-status'];
+    const metaLabels=metaSelects.map(id=>document.getElementById(id).value).filter(Boolean);
+    const selLabels=[...checkboxLabels,...metaLabels];
     const oldLabels=new Set(iss.labels||[]);
     const addLabels=selLabels.filter(l=>!oldLabels.has(l));
     const removeLabels=[...oldLabels].filter(l=>!selLabels.includes(l));
