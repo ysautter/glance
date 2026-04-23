@@ -7,4 +7,5 @@ services:
       - .env
     volumes:
       - ./boards.json:/app/boards.json
+      - ./gantt-order.json:/app/gantt-order.json
     restart: unless-stopped
