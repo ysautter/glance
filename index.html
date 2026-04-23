@@ -404,6 +404,10 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
         <div class="lbl-pick-list" id="lbl-pick-list"></div>
         <div class="lbl-sel-info" id="lbl-sel-count">0 labels selected</div>
       </div>
+      <div class="modal-field">
+        <label>Writers <span style="font-weight:400;text-transform:none;letter-spacing:0;">(usernames with write access, comma-separated)</span></label>
+        <input type="text" id="board-writers-input" placeholder="e.g. alice,bob">
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
@@ -551,6 +555,11 @@ if(_served){
   }
 }
 function logout(){location.href='/auth/logout';}
+function canWriteBoard(board){
+  if(_isAdmin)return true;
+  if(!board||!board.writers||!board.writers.length)return false;
+  return board.writers.includes(_user);
+}
 function _apiUrl(path){return _served?path:S.baseUrl+path;}
 function _apiHeaders(extra={}){const h={...extra};if(!_served)h['Authorization']=`Bearer ${S.token}`;return h;}
 async function glFetch(path,params={}){
@@ -1321,11 +1330,13 @@ function renderBoardsList(){
     S.boards.forEach(b=>{
       const cols=b.columns.map(name=>{const l=S.labels.find(x=>x.name===name)||{color:null};return`<span class="lbl-chip" style="${lblStyle(l.color)}">${esc(name)}</span>`;}).join('');
       const open=S.allIssues.filter(i=>i.state==='opened'&&Array.isArray(i.labels)&&b.columns.some(c=>i.labels.includes(c))).length;
+      const writerInfo=b.writers&&b.writers.length?` · writers: ${b.writers.join(', ')}`:'';
       html+=`<div class="board-item" onclick="openBoard('${b.id}')">
-        ${_isAdmin?`<button class="board-delete" onclick="event.stopPropagation();deleteBoard('${b.id}')" title="Delete">×</button>`:''}
+        ${_isAdmin?`<button class="board-delete" onclick="event.stopPropagation();deleteBoard('${b.id}')" title="Delete">×</button>
+        <button class="board-delete" style="right:32px;" onclick="event.stopPropagation();openNewBoardModal(S.boards.find(x=>x.id==='${b.id}'))" title="Edit">✎</button>`:''}
         <div class="board-item-name">${esc(b.name)}</div>
         <div class="board-item-cols">${cols||'<span style="font-size:11px;color:var(--muted)">No columns</span>'}</div>
-        <div class="board-item-meta">${b.columns.length} column${b.columns.length!==1?'s':''} · ${open} open issue${open!==1?'s':''}</div>
+        <div class="board-item-meta">${b.columns.length} column${b.columns.length!==1?'s':''} · ${open} open issue${open!==1?'s':''}${writerInfo}</div>
       </div>`;
     });
     html+=`</div>`;
@@ -1377,16 +1388,17 @@ function refreshKanban(){
       return ai-bi;
     });
   };
+  const cw=canWriteBoard(board);
   let html='';
   // Unassigned column (first)
   const unassigned=issues.filter(i=>!board.columns.some(c=>Array.isArray(i.labels)&&i.labels.includes(c)));
   if(!S.colFilters)S.colFilters={};
-  html+=kbCol('Unassigned',null,sortByOrder(unassigned,'Unassigned'),msMap,true,S.colFilters['Unassigned']);
+  html+=kbCol('Unassigned',null,sortByOrder(unassigned,'Unassigned'),msMap,true,S.colFilters['Unassigned'],cw);
   // Label columns
   board.columns.forEach(colName=>{
     const lbl=S.labels.find(l=>l.name===colName)||{color:null,name:colName};
     const colIssues=issues.filter(i=>Array.isArray(i.labels)&&i.labels.includes(colName));
-    html+=kbCol(colName,lbl.color,sortByOrder(colIssues,colName),msMap,false,S.colFilters[colName]);
+    html+=kbCol(colName,lbl.color,sortByOrder(colIssues,colName),msMap,false,S.colFilters[colName],cw);
   });
 
   // Save scroll positions before re-render
@@ -1566,7 +1578,7 @@ function toggleColFilter(colName,label,checked){
   refreshKanban();
 }
 
-function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
+function kbCol(name,color,issues,msMap,isUnassigned,colFilters,canWrite){
   const dot=color?lblFg(color):'#6b7280';
   // Collect all labels present in this column's issues (excluding the column's own label)
   const labelSet=new Set();
@@ -1590,7 +1602,7 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
       const ms=iss.milestone?msMap[iss.milestone.id]:null;
       const due=parseD(iss.due_date);
       const overdue=due&&due<new Date()&&iss.state==='opened';
-      cards+=`<div class="kb-card"${_isAdmin?' draggable="true"':''} data-iid="${iss.iid}" data-pid="${iss.project_id}" data-col="${esc(name)}" onclick="openIssue(${iss.project_id},${iss.iid})">
+      cards+=`<div class="kb-card"${canWrite?' draggable="true"':''} data-iid="${iss.iid}" data-pid="${iss.project_id}" data-col="${esc(name)}" onclick="openIssue(${iss.project_id},${iss.iid})">
         <div class="kb-card-title">${esc(iss.title)}</div>
         ${chips?`<div class="kb-card-labels">${chips}</div>`:''}
         <div class="kb-card-meta">
@@ -1614,9 +1626,9 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters){
       <div class="kb-col-filter-drop" onclick="event.stopPropagation()">${opts}</div>
     </span>`;
   }
-  return`<div class="kb-col"${!isUnassigned&&_isAdmin?` draggable="true"`:''} data-col="${esc(name)}">
+  return`<div class="kb-col"${!isUnassigned&&canWrite?` draggable="true"`:''} data-col="${esc(name)}">
     <div class="kb-col-head">
-      ${!isUnassigned&&_isAdmin?`<span class="kb-col-drag" title="Drag to reorder">⠿</span>`:''}
+      ${!isUnassigned&&canWrite?`<span class="kb-col-drag" title="Drag to reorder">⠿</span>`:''}
       <span class="kb-col-lbl" style="background:${dot}"></span>
       <span class="kb-col-name">${esc(name)}</span>
       <span class="kb-col-cnt">${filtered.length}${activeFilters.length?'/'+issues.length:''}</span>
@@ -1632,21 +1644,28 @@ function deleteBoard(id){
 }
 
 // ── Board modal ────────────────────────────────────────────
-function openNewBoardModal(){
-  document.getElementById('board-name-input').value='';
+function openNewBoardModal(editBoard){
+  document.getElementById('board-name-input').value=editBoard?editBoard.name:'';
   document.getElementById('lbl-search').value='';
-  buildLabelPicker('');updateCreateBtn();
+  document.getElementById('board-writers-input').value=editBoard?(editBoard.writers||[]).join(', '):'';
+  buildLabelPicker('',editBoard);updateCreateBtn();
+  document.querySelector('#modal-overlay .modal-head h3').textContent=editBoard?'Edit board':'New board';
+  document.getElementById('btn-create').textContent=editBoard?'Save':'Create board';
+  document.getElementById('btn-create').onclick=()=>{if(editBoard)saveEditBoard(editBoard.id);else createBoard();};
   document.getElementById('modal-overlay').style.display='flex';
   setTimeout(()=>document.getElementById('board-name-input').focus(),60);
 }
 function closeModal(){document.getElementById('modal-overlay').style.display='none';}
 
-function buildLabelPicker(filter){
+let _editBoardRef=null;
+function buildLabelPicker(filter,editBoard){
+  if(editBoard!==undefined)_editBoardRef=editBoard;
+  const selCols=_editBoardRef?new Set(_editBoardRef.columns):new Set();
   const lower=(filter||'').toLowerCase();
   const filtered=filter?S.labels.filter(l=>l.name.toLowerCase().includes(lower)):S.labels;
   document.getElementById('lbl-pick-list').innerHTML=filtered.map(l=>`
     <label class="lbl-pick-item">
-      <input type="checkbox" value="${esc(l.name)}" onchange="updateCreateBtn()">
+      <input type="checkbox" value="${esc(l.name)}" ${selCols.has(l.name)?'checked':''} onchange="updateCreateBtn()">
       <span class="lbl-pick-dot" style="background:${lblFg(l.color)}"></span>
       <span class="lbl-pick-name">${esc(l.name)}</span>
       ${l.open_issues_count!=null?`<span class="lbl-pick-count">${l.open_issues_count} open</span>`:''}
@@ -1665,8 +1684,17 @@ function updateCreateBtn(){
 function createBoard(){
   const name=document.getElementById('board-name-input').value.trim();
   const columns=getSelectedLabels();
+  const writers=(document.getElementById('board-writers-input').value||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(!name||!columns.length)return;
-  S.boards.push({id:uid(),name,columns});
+  S.boards.push({id:uid(),name,columns,writers});
+  saveBoardsToStorage();closeModal();renderBoardsList();
+}
+function saveEditBoard(id){
+  const board=S.boards.find(b=>b.id===id);if(!board)return;
+  board.name=document.getElementById('board-name-input').value.trim();
+  board.columns=getSelectedLabels();
+  board.writers=(document.getElementById('board-writers-input').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!board.name||!board.columns.length)return;
   saveBoardsToStorage();closeModal();renderBoardsList();
 }
 

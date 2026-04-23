@@ -391,7 +391,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (p === '/api/boards' && req.method === 'PUT') {
-    if (role !== 'admin') {
+    const isBoardWriter = loadBoards().some(b => (b.writers || []).includes(username));
+    if (role !== 'admin' && !isBoardWriter) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Admin access required' }));
       return;
@@ -438,7 +439,8 @@ const server = http.createServer(async (req, res) => {
 
   // ── GitLab proxy ────────────────────────────────────────
   if (p.startsWith('/api/v4/') && req.method === 'PUT') {
-    if (role !== 'admin') {
+    const isBoardWriter = role !== 'admin' && loadBoards().some(b => (b.writers || []).includes(username));
+    if (role !== 'admin' && !isBoardWriter) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Admin access required' }));
       return;
