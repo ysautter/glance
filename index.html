@@ -408,6 +408,11 @@ code{font-family:'JetBrains Mono',monospace;font-size:12px;background:rgba(255,2
         <label>Writers <span style="font-weight:400;text-transform:none;letter-spacing:0;">(usernames with write access, comma-separated)</span></label>
         <input type="text" id="board-writers-input" placeholder="e.g. alice,bob">
       </div>
+      <div class="modal-field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="board-hide-unassigned"> Hide unassigned column
+        </label>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
@@ -1391,9 +1396,11 @@ function refreshKanban(){
   const cw=canWriteBoard(board);
   let html='';
   // Unassigned column (first)
-  const unassigned=issues.filter(i=>!board.columns.some(c=>Array.isArray(i.labels)&&i.labels.includes(c)));
   if(!S.colFilters)S.colFilters={};
-  html+=kbCol('Unassigned',null,sortByOrder(unassigned,'Unassigned'),msMap,true,S.colFilters['Unassigned'],cw);
+  if(!board.hideUnassigned){
+    const unassigned=issues.filter(i=>!board.columns.some(c=>Array.isArray(i.labels)&&i.labels.includes(c)));
+    html+=kbCol('Unassigned',null,sortByOrder(unassigned,'Unassigned'),msMap,true,S.colFilters['Unassigned'],cw);
+  }
   // Label columns
   board.columns.forEach(colName=>{
     const lbl=S.labels.find(l=>l.name===colName)||{color:null,name:colName};
@@ -1648,6 +1655,7 @@ function openNewBoardModal(editBoard){
   document.getElementById('board-name-input').value=editBoard?editBoard.name:'';
   document.getElementById('lbl-search').value='';
   document.getElementById('board-writers-input').value=editBoard?(editBoard.writers||[]).join(', '):'';
+  document.getElementById('board-hide-unassigned').checked=editBoard?!!editBoard.hideUnassigned:false;
   buildLabelPicker('',editBoard);updateCreateBtn();
   document.querySelector('#modal-overlay .modal-head h3').textContent=editBoard?'Edit board':'New board';
   document.getElementById('btn-create').textContent=editBoard?'Save':'Create board';
@@ -1685,8 +1693,9 @@ function createBoard(){
   const name=document.getElementById('board-name-input').value.trim();
   const columns=getSelectedLabels();
   const writers=(document.getElementById('board-writers-input').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const hideUnassigned=document.getElementById('board-hide-unassigned').checked;
   if(!name||!columns.length)return;
-  S.boards.push({id:uid(),name,columns,writers});
+  S.boards.push({id:uid(),name,columns,writers,hideUnassigned});
   saveBoardsToStorage();closeModal();renderBoardsList();
 }
 function saveEditBoard(id){
@@ -1694,6 +1703,7 @@ function saveEditBoard(id){
   board.name=document.getElementById('board-name-input').value.trim();
   board.columns=getSelectedLabels();
   board.writers=(document.getElementById('board-writers-input').value||'').split(',').map(s=>s.trim()).filter(Boolean);
+  board.hideUnassigned=document.getElementById('board-hide-unassigned').checked;
   if(!board.name||!board.columns.length)return;
   saveBoardsToStorage();closeModal();renderBoardsList();
 }
