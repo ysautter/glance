@@ -1379,7 +1379,7 @@ function refreshKanban(){
   const issues=S.allIssues.filter(i=>sf==='all'?true:i.state===sf);
 
   // ms lookup
-  const msMap={};S.milestones.forEach(ms=>msMap[ms.id]={title:ms.title,color:ms.color});
+  const msMap={};S.milestones.forEach(ms=>msMap[ms.id]={title:ms.title,color:ms.color,due_date:ms.due_date});
 
   if(!board.cardOrder)board.cardOrder={};
   const sortByOrder=(list,colName)=>{
@@ -1607,7 +1607,7 @@ function kbCol(name,color,issues,msMap,isUnassigned,colFilters,canWrite){
       const issLabels=Array.isArray(iss.labels)?iss.labels:[];
       const chips=issLabels.map(l=>{const m=S.labels.find(x=>x.name===l)||{color:null};return`<span class="lbl-chip" style="${lblStyle(m.color)}">${esc(l)}</span>`;}).join('');
       const ms=iss.milestone?msMap[iss.milestone.id]:null;
-      const due=parseD(iss.due_date);
+      const due=parseD(iss.due_date)||(ms?parseD(ms.due_date):null);
       const overdue=due&&due<new Date()&&iss.state==='opened';
       cards+=`<div class="kb-card"${canWrite?' draggable="true"':''} data-iid="${iss.iid}" data-pid="${iss.project_id}" data-col="${esc(name)}" onclick="openIssue(${iss.project_id},${iss.iid})">
         <div class="kb-card-title">${esc(iss.title)}</div>
